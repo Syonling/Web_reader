@@ -217,7 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+backend/
+
 .DS_Store
 **/.DS_Store
 
-backend/
+
