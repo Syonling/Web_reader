@@ -1,0 +1,611 @@
+/**
+ * style.css — 全局样式
+ * 使用 CSS 变量统一管理颜色/间距，便于未来主题切换。
+ */
+
+/* ─── CSS 变量（主题接口）──────────────────────────────────────────────────── */
+:root {
+  --color-bg:           #fafaf8;
+  --color-surface:      #ffffff;
+  --color-border:       #e0ddd8;
+  --color-text:         #1a1a1a;
+  --color-text-muted:   #6b6b6b;
+  --color-primary:      #3b6ff0;
+  --color-primary-hover:#2d5cd4;
+  --color-danger:       #d93025;
+  --color-success:      #1a7a4a;
+
+  --toolbar-height:     52px;
+  --nav-height:         52px;
+  --border-radius:      8px;
+  --shadow:             0 2px 12px rgba(0, 0, 0, 0.12);
+  --shadow-modal:       0 8px 32px rgba(0, 0, 0, 0.22);
+
+  --font-ui:    -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-read:  Georgia, 'Times New Roman', serif;
+}
+
+/* ─── 基础重置 ────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+}
+
+/* ─── 整体布局（flex 列）────────────────────────────────────────────────────── */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── 顶部工具栏 ──────────────────────────────────────────────────────────── */
+#toolbar {
+  flex: 0 0 var(--toolbar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  gap: 12px;
+  z-index: 10;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+#book-title {
+  font-size: 14px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+
+/* ─── 阅读区域 ────────────────────────────────────────────────────────────── */
+#reader-container {
+  flex: 1 1 auto;
+  overflow: hidden;
+  position: relative;
+  background: var(--color-bg);
+}
+
+#reader {
+  width: 100%;
+  height: 100%;
+}
+
+/* epub.js 生成的 iframe */
+#reader iframe {
+  border: none;
+}
+
+#placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-size: 16px;
+  pointer-events: none;
+}
+
+/* ─── 底部导航 ────────────────────────────────────────────────────────────── */
+#navigation {
+  flex: 0 0 var(--nav-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ─── 通用按钮 ────────────────────────────────────────────────────────────── */
+.btn {
+  padding: 7px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.btn:hover { background: #f0ede8; border-color: #c8c4be; }
+
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+}
+
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+/* ─── AI 模型下拉菜单 ─────────────────────────────────────────────────────── */
+#provider-select {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  background: var(--color-surface);
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+  max-width: 180px;
+}
+
+#provider-select:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+#provider-select .needs-key { color: #b45309; }
+
+/* ─── 后端状态指示点 ──────────────────────────────────────────────────────── */
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.status-online  { background: var(--color-success); }
+.status-offline { background: var(--color-danger); }
+.status-unknown { background: #aaa; }
+
+/* ─── 工具栏分析按钮 ──────────────────────────────────────────────────────── */
+.btn-analyze {
+  background: var(--color-primary);
+  color: #fff;
+  border-color: var(--color-primary);
+  font-weight: 500;
+}
+
+.btn-analyze:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.btn-analyze:disabled {
+  background: var(--color-border);
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  cursor: not-allowed;
+}
+
+/* ─── 弹窗遮罩 ────────────────────────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+}
+
+.modal-overlay.hidden { display: none; }
+
+/* ─── 弹窗主体 ────────────────────────────────────────────────────────────── */
+.modal {
+  background: var(--color-surface);
+  border-radius: 12px;
+  box-shadow: var(--shadow-modal);
+  width: 100%;
+  max-width: 560px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.modal-header h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.btn-close:hover { background: #f0ede8; color: var(--color-text); }
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+/* ─── 加载状态 ────────────────────────────────────────────────────────────── */
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 0;
+}
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-text {
+  font-size: 14px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.selected-preview {
+  font-style: normal;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+/* ─── 错误状态 ────────────────────────────────────────────────────────────── */
+.error-state {
+  text-align: center;
+  padding: 24px 0;
+}
+
+.error-icon   { font-size: 32px; margin-bottom: 12px; }
+.error-message { color: var(--color-danger); font-size: 14px; }
+
+/* ─── 分析结果 ────────────────────────────────────────────────────────────── */
+.result-section {
+  margin-bottom: 20px;
+}
+
+.result-section:last-child { margin-bottom: 0; }
+
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
+  margin-bottom: 8px;
+}
+
+.original-text {
+  font-family: var(--font-read);
+  font-size: 16px;
+  color: var(--color-text);
+  line-height: 1.6;
+}
+
+.translation-text {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--color-text);
+}
+
+/* 词汇列表 */
+.vocab-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.vocab-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #f7f5f0;
+  border-radius: var(--border-radius);
+  font-size: 14px;
+}
+
+.vocab-word    { font-size: 17px; font-weight: 600; font-family: var(--font-read); }
+.vocab-reading { color: var(--color-text-muted); }
+.vocab-meaning { flex: 1 1 100%; color: var(--color-text); }
+
+.conjugation-note {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* 语法列表 */
+.grammar-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.grammar-item {
+  padding: 10px 12px;
+  background: #f7f5f0;
+  border-radius: var(--border-radius);
+  font-size: 14px;
+}
+
+.grammar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.grammar-pattern {
+  font-weight: 600;
+  font-family: var(--font-read);
+  font-size: 15px;
+}
+
+.grammar-explanation { color: var(--color-text); line-height: 1.5; }
+
+.grammar-example {
+  margin-top: 4px;
+  color: var(--color-text-muted);
+  font-style: italic;
+  font-size: 13px;
+}
+
+/* 等级标签 */
+.level-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  background: #e8f0fe;
+  color: var(--color-primary);
+}
+
+/* 备注列表 */
+.notes-list {
+  list-style: disc;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+/* ─── 字体大小控件 ────────────────────────────────────────────────────────── */
+.font-size-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius);
+  padding: 2px 6px;
+  background: var(--color-surface);
+}
+
+.btn-icon {
+  padding: 3px 8px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--color-text);
+  line-height: 1;
+}
+
+.btn-icon:hover { background: #f0ede8; }
+
+#font-size-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  min-width: 34px;
+  text-align: center;
+  user-select: none;
+}
+
+/* ─── PDF 阅读器 ──────────────────────────────────────────────────────────── */
+.pdf-page {
+  position: relative;
+  box-shadow: var(--shadow);
+  background: #fff;
+  flex-shrink: 0;
+}
+
+/* 文字层：透明覆盖在 canvas 上，仅用于鼠标选取 */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  user-select: text;
+}
+
+.pdf-text-layer > span,
+.pdf-text-layer > .markedContent > span {
+  color: transparent;        /* 正常不可见，选中时浏览器绘制蓝色高亮 */
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.pdf-text-layer > span::selection,
+.pdf-text-layer > .markedContent > span::selection {
+  background: rgba(0, 100, 220, 0.25);
+  color: transparent;
+}
+
+/* ─── TXT 阅读器 ──────────────────────────────────────────────────────────── */
+.txt-content {
+  font-family: var(--font-read);
+  font-size: 100%;        /* 受 A-/A+ 控制 */
+  line-height: 1.9;
+  white-space: pre-wrap;  /* 保留换行与空格，同时自动折行 */
+  word-break: break-all;
+  color: var(--color-text);
+  max-width: 720px;
+  margin: 0 auto;
+  cursor: text;
+  user-select: text;
+}
+
+/* ─── 占位提示 ────────────────────────────────────────────────────────────── */
+.placeholder-sub {
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.unsupported-msg {
+  text-align: center;
+  max-width: 360px;
+  padding: 20px;
+}
+
+.unsupported-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.unsupported-body {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+/* ─── 页码信息 ────────────────────────────────────────────────────────────── */
+#page-info {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  min-width: 60px;
+  text-align: center;
+  user-select: none;
+}
+
+/* ─── EPUB 阅读器容器 ─────────────────────────────────────────────────────── */
+.epub-reader {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.epub-scroll {
+  width: 100%;
+  height: 100%;
+}
+
+/* 横排：上下滚动 */
+.layout-horizontal .epub-scroll {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* 竖排：左右滚动；direction:rtl 让初始位置在右端（即章节开头） */
+.layout-vertical .epub-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  direction: rtl;
+}
+
+/* ─── 正文内容区 ──────────────────────────────────────────────────────────── */
+.reader-content {
+  font-family: 'Hiragino Mincho ProN', 'Yu Mincho', 'MS Mincho',
+               'Noto Serif JP', Georgia, 'Times New Roman', serif;
+  font-size: 100%;    /* 受 A-/A+ 控制 */
+  line-height: 2;
+  color: var(--color-text);
+  cursor: text;
+  user-select: text;
+}
+
+.layout-horizontal .reader-content {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 40px 60px;
+  direction: ltr;
+}
+
+.layout-vertical .reader-content {
+  writing-mode: vertical-rl;
+  direction: ltr;         /* 内容区恢复 ltr，避免 rtl 容器反转文字 */
+  padding: 40px 20px;
+  min-height: 100%;
+  min-width: max-content; /* 让内容宽度撑开横向滚动 */
+  box-sizing: border-box;
+}
+
+/* ─── 段落 / 标题 ─────────────────────────────────────────────────────────── */
+.r-p {
+  margin-bottom: 0.8em;
+  text-indent: 1em;
+}
+
+.r-h {
+  font-weight: bold;
+  margin: 1em 0 0.5em;
+  text-indent: 0;
+}
+
+.r-h1 { font-size: 1.4em; }
+.r-h2 { font-size: 1.2em; }
+.r-h3 { font-size: 1.05em; }
+.r-h4, .r-h5, .r-h6 { font-size: 1em; }
+
+/* ─── Ruby（假名注音）─────────────────────────────────────────────────────── */
+ruby {
+  ruby-align: center;
+}
+
+rt {
+  font-size: 0.5em;
+  ruby-position: over;    /* 横排在上方，vertical-rl 自动转为右侧 */
+}
+
+/* ─── 工具类 ──────────────────────────────────────────────────────────────── */
+.hidden { display: none !important; }

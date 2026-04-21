@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reader</title>
+  <link rel="stylesheet" href="style.css">
+
+  <!-- epub.js 依赖 -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+
+  <!-- PDF.js -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script>
+    // 指定 PDF.js worker 路径（必须在使用前设置）
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    }
+  </script>
+</head>
+<body>
+
+  <!-- ── 顶部工具栏 ──────────────────────────────────────────────────────── -->
+  <header id="toolbar">
+    <div class="toolbar-left">
+      <label for="file-input" class="btn btn-primary">打开文件</label>
+      <!-- 接受 epub / pdf；mobi/azw3 会显示提示 -->
+      <input type="file" id="file-input" accept=".epub,.pdf,.txt,.mobi,.azw3,.azw,.kfx" hidden>
+      <span id="book-title">未打开文件</span>
+    </div>
+
+    <div class="toolbar-right">
+      <div class="font-size-control" title="调整字体/缩放大小">
+        <button id="font-decrease" class="btn btn-icon">A−</button>
+        <span id="font-size-label">100%</span>
+        <button id="font-increase" class="btn btn-icon">A+</button>
+      </div>
+
+      <button id="direction-btn" class="btn" hidden title="切换横排/竖排">竖排</button>
+
+      <button id="analyze-btn" class="btn btn-analyze" disabled title="先选中文字再点击">
+        分析选中文字
+      </button>
+
+      <select id="provider-select" disabled title="选择 AI 模型">
+        <option value="">连接中...</option>
+      </select>
+
+      <span id="status-dot" class="status-dot status-unknown" title="后端状态"></span>
+    </div>
+  </header>
+
+  <!-- ── 阅读区域 ────────────────────────────────────────────────────────── -->
+  <main id="reader-container">
+    <div id="reader"></div>
+    <div id="placeholder">
+      <p>支持 EPUB、PDF 格式<br><span class="placeholder-sub">选中文字后点击「分析选中文字」</span></p>
+    </div>
+  </main>
+
+  <!-- ── 底部翻页导航 ────────────────────────────────────────────────────── -->
+  <nav id="navigation" hidden>
+    <button id="prev-btn" class="btn">←</button>
+    <span id="page-info"></span>
+    <button id="next-btn" class="btn">→</button>
+  </nav>
+
+  <!-- ── 分析结果弹窗 ────────────────────────────────────────────────────── -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h3 id="modal-title">分析结果</h3>
+        <button id="modal-close" class="btn-close" aria-label="关闭">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="api.js"></script>
+  <script src="ui.js"></script>
+  <script src="epub-parser.js"></script>
+  <script src="renderer.js"></script>
+  <script src="reader.js"></script>
+
+</body>
+</html>
