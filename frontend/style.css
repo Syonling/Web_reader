@@ -630,7 +630,11 @@ body.theme-green {
   font-family: var(--font-read);
   font-size: 100%;
   line-height: 1.9;
-  white-space: pre-wrap;
+  box-sizing: border-box;
+}
+
+.txt-pages.page-turning {
+  transition: transform 220ms ease-out;
 }
 
 .txt-page {
@@ -641,8 +645,9 @@ body.theme-green {
 .txt-page-body {
   width: 100%;
   height: 100%;
-  padding: 0 18px;
+  padding: 0 18px 42px;
   overflow: hidden;
+  white-space: pre-wrap;
   box-sizing: border-box;
 }
 

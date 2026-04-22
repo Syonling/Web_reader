@@ -37,8 +37,6 @@ let txtRawText = '';
 let txtPageNum = 0;
 let txtTotalPages = 1;
 let txtPageStep = 1;
-let txtPendingPageAnchor = null;
-let txtTemporaryAnchorActive = false;
 
 // 阅读设置
 let readerTheme = 'original';
@@ -135,8 +133,6 @@ function cleanupCurrentReader() {
   txtPageNum      = 0;
   txtTotalPages   = 1;
   txtPageStep     = 1;
-  txtPendingPageAnchor = null;
-  txtTemporaryAnchorActive = false;
 
   UI.updateFontSizeLabel(currentFontSize);
   UI.setAnalyzeBtnEnabled(false);
@@ -401,6 +397,11 @@ function markPageUnit(page, unitIndex) {
   page.el.dataset.endUnit = String(unitIndex + 1);
 }
 
+function markPageRange(page, startUnit, endUnit) {
+  if (page.el.dataset.startUnit == null) page.el.dataset.startUnit = String(startUnit);
+  page.el.dataset.endUnit = String(endUnit);
+}
+
 function appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex, forcedPageStart = null) {
   let page = pages[pages.length - 1];
   if (!block.nodes?.length || block.type === 'break') {
@@ -415,9 +416,50 @@ function appendBlockToEpubPages(block, container, pages, pageW, pageH, direction
     return { page, nextUnitIndex: unitIndex + 1 };
   }
 
+  const units = flattenInlineUnits(block.nodes);
+  const blockStart = unitIndex;
+  const blockEnd = unitIndex + units.length;
+  const forcedInsideBlock = forcedPageStart != null &&
+    forcedPageStart > blockStart &&
+    forcedPageStart < blockEnd;
+
+  if (!forcedInsideBlock) {
+    if (unitIndex === forcedPageStart && shouldForceEpubBreak(page.body, direction)) {
+      page = createEpubPage(pageW, pageH, direction);
+      container.appendChild(page.el);
+      pages.push(page);
+    }
+
+    const wholeBlock = Renderer._renderBlock(block);
+    page.body.appendChild(wholeBlock);
+    markPageRange(page, blockStart, blockEnd);
+
+    if (!epubPageOverflows(page.body, direction)) {
+      return { page, nextUnitIndex: blockEnd };
+    }
+
+    page.body.removeChild(wholeBlock);
+    page.el.dataset.endUnit = String(blockStart);
+
+    if (page.body.childNodes.length > 0) {
+      page = createEpubPage(pageW, pageH, direction);
+      container.appendChild(page.el);
+      pages.push(page);
+      page.body.appendChild(wholeBlock);
+      markPageRange(page, blockStart, blockEnd);
+
+      if (!epubPageOverflows(page.body, direction)) {
+        return { page, nextUnitIndex: blockEnd };
+      }
+
+      page.body.removeChild(wholeBlock);
+      page.el.dataset.endUnit = String(blockStart);
+    }
+  }
+
   let blockEl = null;
 
-  for (const unit of flattenInlineUnits(block.nodes)) {
+  for (const unit of units) {
     if (unitIndex === forcedPageStart && shouldForceEpubBreak(page.body, direction)) {
       if (blockEl && !blockEl.hasChildNodes()) page.body.removeChild(blockEl);
       page = createEpubPage(pageW, pageH, direction);
@@ -772,7 +814,7 @@ async function loadTxt(file) {
   UI.setBookTitle(file.name);
   document.getElementById('placeholder').classList.add('hidden');
 
-  txtRawText = await decodeTxtFile(file);
+  txtRawText = normalizeTxtForReading(await decodeTxtFile(file));
 
   const container = document.getElementById('reader');
   container.innerHTML = '';
@@ -816,156 +858,128 @@ function initTxtLayout(resetToStart = true) {
     const cW = scrollEl.clientWidth;
     scrollEl.classList.remove('page-turning');
     scrollEl.scrollLeft = 0;
+    scrollEl.scrollTop = 0;
+    pagesEl.classList.remove('page-turning');
+    pagesEl.style.transform = 'translateX(0px)';
     pagesEl.style.height = cH + 'px';
     pagesEl.style.width = cW + 'px';
     txtPageStep = cW;
 
-    renderTxtPages(pagesEl, cW, cH, txtPendingPageAnchor);
+    renderTxtEstimatedPages(pagesEl, cW, cH);
 
     requestAnimationFrame(() => {
       txtTotalPages = Math.max(1, pagesEl.querySelectorAll('.txt-page').length);
-      if (txtPendingPageAnchor != null) {
-        txtPageNum = findTxtPageByAnchor(txtPendingPageAnchor);
-        txtPendingPageAnchor = null;
-        txtTemporaryAnchorActive = true;
-      } else if (resetToStart) {
-        txtPageNum = 0;
-        txtTemporaryAnchorActive = false;
-      }
+      if (resetToStart) txtPageNum = 0;
+      else txtPageNum = Math.min(txtPageNum, txtTotalPages - 1);
       goToTxtPage(txtPageNum, false);
     });
   });
 }
 
-function renderTxtPages(container, pageW, pageH, forcedPageStart = null) {
+function renderTxtEstimatedPages(container, pageW, pageH) {
   container.innerHTML = '';
-  const pages = [];
-  let page = createTxtPage(pageW, pageH);
-  container.appendChild(page.el);
-  pages.push(page);
 
-  for (let i = 0; i < txtRawText.length; i++) {
-    if (i === forcedPageStart && page.body.hasChildNodes()) {
-      page = createTxtPage(pageW, pageH);
-      container.appendChild(page.el);
-      pages.push(page);
-    }
+  const fontPx = 16 * currentFontSize / 100;
+  const linePx = fontPx * 1.9;
+  const innerW = Math.max(120, pageW - 36);
+  const charsPerLine = Math.max(8, Math.floor(innerW / (fontPx * 0.95)));
+  const verticalSafePx = linePx * 1.8 + 16;
+  const linesPerPage = Math.max(4, Math.floor((pageH - verticalSafePx) / linePx));
+  const chunks = splitTxtIntoEstimatedPages(txtRawText, charsPerLine, linesPerPage);
+  const frag = document.createDocumentFragment();
 
-    const node = document.createTextNode(txtRawText[i]);
-    page.body.appendChild(node);
-    markTxtPageUnit(page, i);
+  for (const chunk of chunks) {
+    const page = document.createElement('section');
+    page.className = 'txt-page';
+    page.style.width = pageW + 'px';
+    page.style.height = pageH + 'px';
 
-    if (page.body.scrollHeight <= page.body.clientHeight + 2) continue;
-
-    page.body.removeChild(node);
-    page.el.dataset.endUnit = String(i);
-
-    if (!page.body.hasChildNodes()) {
-      page.body.appendChild(node);
-      markTxtPageUnit(page, i);
-      continue;
-    }
-
-    page = createTxtPage(pageW, pageH);
-    container.appendChild(page.el);
-    pages.push(page);
-    page.body.appendChild(node);
-    markTxtPageUnit(page, i);
+    const body = document.createElement('div');
+    body.className = 'txt-page-body';
+    body.textContent = chunk;
+    page.appendChild(body);
+    frag.appendChild(page);
   }
 
-  container.style.width = (pages.length * pageW) + 'px';
+  container.appendChild(frag);
+  container.style.width = (chunks.length * pageW) + 'px';
 }
 
-function createTxtPage(pageW, pageH) {
-  const el = document.createElement('section');
-  el.className = 'txt-page';
-  el.style.width = pageW + 'px';
-  el.style.height = pageH + 'px';
+function splitTxtIntoEstimatedPages(text, charsPerLine, linesPerPage) {
+  const chunks = [];
+  let start = 0;
+  let lineUnits = 0;
+  let lines = 1;
 
-  const body = document.createElement('div');
-  body.className = 'txt-page-body';
-  el.appendChild(body);
-  return { el, body };
-}
+  const pushPage = (end) => {
+    chunks.push(text.slice(start, end));
+    start = end;
+    lineUnits = 0;
+    lines = 1;
+  };
 
-function markTxtPageUnit(page, unitIndex) {
-  if (page.el.dataset.startUnit == null) page.el.dataset.startUnit = String(unitIndex);
-  page.el.dataset.endUnit = String(unitIndex + 1);
-}
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
 
-function getCurrentTxtPageAnchor() {
-  const page = document.querySelectorAll('#txt-pages .txt-page')[txtPageNum];
-  if (!page) return 0;
-  return parseInt(page.dataset.startUnit || '0', 10);
-}
+    if (ch === '\r') continue;
+    if (ch === '\n') {
+      lines++;
+      lineUnits = 0;
+    } else {
+      lineUnits += isNarrowTxtChar(ch) ? 0.55 : 1;
+      if (lineUnits >= charsPerLine) {
+        lines++;
+        lineUnits = 0;
+      }
+    }
 
-function findTxtPageByAnchor(anchor) {
-  const pages = [...document.querySelectorAll('#txt-pages .txt-page')];
-  if (!pages.length) return 0;
-
-  for (let i = 0; i < pages.length; i++) {
-    const start = parseInt(pages[i].dataset.startUnit || '0', 10);
-    const end = parseInt(pages[i].dataset.endUnit || String(start + 1), 10);
-    if (anchor >= start && anchor < end) return i;
-    if (anchor < start) return Math.max(0, i - 1);
+    if (lines > linesPerPage) {
+      pushPage(i + 1);
+    }
   }
-  return pages.length - 1;
+
+  if (start < text.length || !chunks.length) chunks.push(text.slice(start));
+  return chunks;
+}
+
+function isNarrowTxtChar(ch) {
+  return ch.charCodeAt(0) < 0x2e80;
+}
+
+function normalizeTxtForReading(text) {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function relayoutTxtKeepingPosition() {
-  txtPendingPageAnchor = getCurrentTxtPageAnchor();
+  const ratio = txtTotalPages > 1 ? txtPageNum / (txtTotalPages - 1) : 0;
   initTxtLayout(false);
-}
-
-function repaginateTxtNaturallyAroundAnchor(anchor, pageDelta) {
-  const pagesEl = document.getElementById('txt-pages');
-  const scrollEl = document.getElementById('txt-scroll');
-  if (!pagesEl || !scrollEl) return false;
-
-  const pageW = scrollEl.clientWidth;
-  const pageH = scrollEl.clientHeight;
-  pagesEl.style.height = pageH + 'px';
-  pagesEl.style.width = pageW + 'px';
-  renderTxtPages(pagesEl, pageW, pageH, null);
-
-  txtPageStep = pageW;
-  txtTotalPages = Math.max(1, pagesEl.querySelectorAll('.txt-page').length);
-  const naturalPage = findTxtPageByAnchor(anchor);
-  txtTemporaryAnchorActive = false;
-  goToTxtPage(naturalPage + pageDelta, false);
-  return true;
+  requestAnimationFrame(() => {
+    txtPageNum = Math.round(ratio * Math.max(txtTotalPages - 1, 0));
+    goToTxtPage(txtPageNum, false);
+  });
 }
 
 function goToTxtPage(pageNum, animated = true) {
   const scrollEl = document.getElementById('txt-scroll');
-  if (!scrollEl) return;
+  const pagesEl = document.getElementById('txt-pages');
+  if (!scrollEl || !pagesEl) return;
 
   txtPageNum = Math.min(Math.max(pageNum, 0), Math.max(txtTotalPages - 1, 0));
   const smooth = animated && pageTurnMode === 'slide';
-  scrollEl.classList.toggle('page-turning', smooth);
-  scrollEl.scrollTo({
-    left: txtPageNum * txtPageStep,
-    top: 0,
-    behavior: smooth ? 'smooth' : 'auto',
-  });
+  pagesEl.classList.toggle('page-turning', smooth);
+  pagesEl.style.transform = `translateX(${-txtPageNum * txtPageStep}px)`;
   updateTxtNav();
 }
 
 function txtPageNext() {
-  if (txtTemporaryAnchorActive) {
-    const anchor = getCurrentTxtPageAnchor();
-    if (repaginateTxtNaturallyAroundAnchor(anchor, 1)) return;
-  }
-
   if (txtPageNum < txtTotalPages - 1) goToTxtPage(txtPageNum + 1);
 }
 
 function txtPagePrev() {
-  if (txtTemporaryAnchorActive) {
-    const anchor = getCurrentTxtPageAnchor();
-    if (repaginateTxtNaturallyAroundAnchor(anchor, -1)) return;
-  }
-
   if (txtPageNum > 0) goToTxtPage(txtPageNum - 1);
 }
 
