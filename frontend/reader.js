@@ -29,6 +29,7 @@ let epubPageStep     = 1;            // EPUB 每页水平推进距离（px）
 let epubResizeTimer  = null;
 let epubPendingPageAnchor = null;     // 重排后恢复当前页开头的源码位置
 let epubPendingPageTarget = null;     // 'start' | 'end' | number
+let epubTemporaryAnchorActive = false; // 缩放/切换后临时固定当前页开头
 const chapterCache   = new Map();    // index → Chapter
 
 // TXT 专用
@@ -37,10 +38,12 @@ let txtPageNum = 0;
 let txtTotalPages = 1;
 let txtPageStep = 1;
 let txtPendingPageAnchor = null;
+let txtTemporaryAnchorActive = false;
 
 // 阅读设置
 let readerTheme = 'original';
 let pageTurnMode = 'slide';           // 'slide' | 'instant'
+const FORCED_BREAK_MIN_FILL = 0.68;
 
 // PDF 专用
 let pdfDoc          = null;
@@ -110,6 +113,7 @@ function cleanupCurrentReader() {
   epubPageStep     = 1;
   epubPendingPageAnchor = null;
   epubPendingPageTarget = null;
+  epubTemporaryAnchorActive = false;
   clearTimeout(epubResizeTimer);
   chapterCache.clear();
   epubTocOpen = false;
@@ -132,6 +136,7 @@ function cleanupCurrentReader() {
   txtTotalPages   = 1;
   txtPageStep     = 1;
   txtPendingPageAnchor = null;
+  txtTemporaryAnchorActive = false;
 
   UI.updateFontSizeLabel(currentFontSize);
   UI.setAnalyzeBtnEnabled(false);
@@ -206,6 +211,7 @@ async function renderEpubChapter(index, pageTarget = 'start') {
   if (index < 0 || index >= epubChapterList.length) return;
   epubCurrentIndex = index;
   epubPendingPageTarget = pageTarget;
+  epubTemporaryAnchorActive = false;
 
   const chapter   = await getEpubChapter(index);
   epubCurrentChapter = chapter;
@@ -263,14 +269,14 @@ function initEpubLayout(resetToStart = true) {
       contentEl.style.columnWidth = '';
       contentEl.style.columnGap   = '';
       contentEl.style.columnFill  = '';
-      renderEpubContentForLayout(contentEl, cW, cH);
+      renderEpubContentForLayout(contentEl, cW, cH, epubPendingPageAnchor);
     } else {
       contentEl.style.width       = cW + 'px';
       contentEl.style.minWidth    = '';
       contentEl.style.columnWidth = '';
       contentEl.style.columnGap   = '';
       contentEl.style.columnFill  = '';
-      renderEpubContentForLayout(contentEl, cW, cH);
+      renderEpubContentForLayout(contentEl, cW, cH, epubPendingPageAnchor);
     }
 
     epubPageStep = cW;
@@ -288,8 +294,10 @@ function initEpubLayout(resetToStart = true) {
       } else if (epubPendingPageAnchor != null) {
         epubPageNum = findEpubPageByAnchor(epubPendingPageAnchor);
         epubPendingPageAnchor = null;
+        epubTemporaryAnchorActive = true;
       } else if (resetToStart) {
         epubPageNum = 0;
+        epubTemporaryAnchorActive = false;
       }
       goToEpubPage(epubPageNum, false);
       el.style.opacity   = '1';
@@ -308,6 +316,25 @@ function resolveEpubPageTarget(target) {
 function relayoutEpubKeepingPosition() {
   epubPendingPageAnchor = getCurrentEpubPageAnchor();
   initEpubLayout(false);
+}
+
+function repaginateEpubNaturallyAroundAnchor(anchor, pageDelta) {
+  const contentEl = document.getElementById('epub-content');
+  const scrollEl = document.getElementById('epub-scroll');
+  if (!contentEl || !scrollEl) return false;
+
+  const pageW = scrollEl.clientWidth;
+  const pageH = scrollEl.clientHeight;
+  contentEl.style.height = pageH + 'px';
+  contentEl.style.width = pageW + 'px';
+  renderEpubContentForLayout(contentEl, pageW, pageH, null);
+
+  epubPageStep = pageW;
+  epubTotalPages = Math.max(1, contentEl.querySelectorAll('.epub-page').length);
+  const naturalPage = findEpubPageByAnchor(anchor);
+  epubTemporaryAnchorActive = false;
+  goToEpubPage(naturalPage + pageDelta, false);
+  return true;
 }
 
 function getCurrentEpubPageAnchor() {
@@ -330,17 +357,17 @@ function findEpubPageByAnchor(anchor) {
   return pages.length - 1;
 }
 
-function renderEpubContentForLayout(contentEl, pageW, pageH) {
+function renderEpubContentForLayout(contentEl, pageW, pageH, forcedPageStart = null) {
   if (!epubCurrentChapter) return;
 
   contentEl.innerHTML = '';
   contentEl.classList.toggle('vertical-pages', epubDirection === 'vertical');
   contentEl.classList.toggle('horizontal-pages', epubDirection === 'horizontal');
 
-  renderPaginatedEpubPages(epubCurrentChapter, contentEl, pageW, pageH, epubDirection);
+  renderPaginatedEpubPages(epubCurrentChapter, contentEl, pageW, pageH, epubDirection, forcedPageStart);
 }
 
-function renderPaginatedEpubPages(chapter, container, pageW, pageH, direction) {
+function renderPaginatedEpubPages(chapter, container, pageW, pageH, direction, forcedPageStart = null) {
   const pages = [];
   let page = createEpubPage(pageW, pageH, direction);
   container.appendChild(page.el);
@@ -348,7 +375,7 @@ function renderPaginatedEpubPages(chapter, container, pageW, pageH, direction) {
 
   let unitIndex = 0;
   for (const block of chapter.blocks) {
-    const result = appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex);
+    const result = appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex, forcedPageStart);
     page = result.page;
     unitIndex = result.nextUnitIndex;
   }
@@ -374,19 +401,36 @@ function markPageUnit(page, unitIndex) {
   page.el.dataset.endUnit = String(unitIndex + 1);
 }
 
-function appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex) {
+function appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex, forcedPageStart = null) {
   let page = pages[pages.length - 1];
   if (!block.nodes?.length || block.type === 'break') {
+    if (unitIndex === forcedPageStart && shouldForceEpubBreak(page.body, direction)) {
+      page = createEpubPage(pageW, pageH, direction);
+      container.appendChild(page.el);
+      pages.push(page);
+    }
     const el = Renderer._renderBlock(block);
     if (el) page.body.appendChild(el);
     markPageUnit(page, unitIndex);
     return { page, nextUnitIndex: unitIndex + 1 };
   }
 
-  let blockEl = createEmptyBlockElement(block);
-  page.body.appendChild(blockEl);
+  let blockEl = null;
 
   for (const unit of flattenInlineUnits(block.nodes)) {
+    if (unitIndex === forcedPageStart && shouldForceEpubBreak(page.body, direction)) {
+      if (blockEl && !blockEl.hasChildNodes()) page.body.removeChild(blockEl);
+      page = createEpubPage(pageW, pageH, direction);
+      container.appendChild(page.el);
+      pages.push(page);
+      blockEl = null;
+    }
+
+    if (!blockEl) {
+      blockEl = createEmptyBlockElement(block);
+      page.body.appendChild(blockEl);
+    }
+
     const node = renderInlineUnit(unit);
     blockEl.appendChild(node);
     markPageUnit(page, unitIndex);
@@ -455,6 +499,18 @@ function epubPageOverflows(pageBody, direction) {
     : pageBody.scrollHeight > pageBody.clientHeight + 2;
 }
 
+function getEpubPageFillRatio(pageBody, direction) {
+  const used = direction === 'vertical' ? pageBody.scrollWidth : pageBody.scrollHeight;
+  const available = direction === 'vertical' ? pageBody.clientWidth : pageBody.clientHeight;
+  if (available <= 0) return 1;
+  return Math.min(1, used / available);
+}
+
+function shouldForceEpubBreak(pageBody, direction) {
+  if (!pageBody.childNodes.length) return false;
+  return getEpubPageFillRatio(pageBody, direction) >= FORCED_BREAK_MIN_FILL;
+}
+
 function getEpubScrollLeft(pageNum) {
   return pageNum * epubPageStep;
 }
@@ -487,6 +543,11 @@ function updateEpubNav() {
 // ─── 章节内翻页 ─────────────────────────────────────────────────────────────
 
 function epubPageNext() {
+  if (epubTemporaryAnchorActive) {
+    const anchor = getCurrentEpubPageAnchor();
+    if (repaginateEpubNaturallyAroundAnchor(anchor, 1)) return;
+  }
+
   if (epubPageNum >= epubTotalPages - 1) {
     if (epubCurrentIndex < epubChapterList.length - 1)
       renderEpubChapter(epubCurrentIndex + 1, 'start');
@@ -497,6 +558,11 @@ function epubPageNext() {
 }
 
 function epubPagePrev() {
+  if (epubTemporaryAnchorActive) {
+    const anchor = getCurrentEpubPageAnchor();
+    if (repaginateEpubNaturallyAroundAnchor(anchor, -1)) return;
+  }
+
   if (epubPageNum <= 0) {
     if (epubCurrentIndex > 0)
       renderEpubChapter(epubCurrentIndex - 1, 'end');
@@ -754,22 +820,24 @@ function initTxtLayout(resetToStart = true) {
     pagesEl.style.width = cW + 'px';
     txtPageStep = cW;
 
-    renderTxtPages(pagesEl, cW, cH);
+    renderTxtPages(pagesEl, cW, cH, txtPendingPageAnchor);
 
     requestAnimationFrame(() => {
       txtTotalPages = Math.max(1, pagesEl.querySelectorAll('.txt-page').length);
       if (txtPendingPageAnchor != null) {
         txtPageNum = findTxtPageByAnchor(txtPendingPageAnchor);
         txtPendingPageAnchor = null;
+        txtTemporaryAnchorActive = true;
       } else if (resetToStart) {
         txtPageNum = 0;
+        txtTemporaryAnchorActive = false;
       }
       goToTxtPage(txtPageNum, false);
     });
   });
 }
 
-function renderTxtPages(container, pageW, pageH) {
+function renderTxtPages(container, pageW, pageH, forcedPageStart = null) {
   container.innerHTML = '';
   const pages = [];
   let page = createTxtPage(pageW, pageH);
@@ -777,6 +845,12 @@ function renderTxtPages(container, pageW, pageH) {
   pages.push(page);
 
   for (let i = 0; i < txtRawText.length; i++) {
+    if (i === forcedPageStart && page.body.hasChildNodes()) {
+      page = createTxtPage(pageW, pageH);
+      container.appendChild(page.el);
+      pages.push(page);
+    }
+
     const node = document.createTextNode(txtRawText[i]);
     page.body.appendChild(node);
     markTxtPageUnit(page, i);
@@ -843,6 +917,25 @@ function relayoutTxtKeepingPosition() {
   initTxtLayout(false);
 }
 
+function repaginateTxtNaturallyAroundAnchor(anchor, pageDelta) {
+  const pagesEl = document.getElementById('txt-pages');
+  const scrollEl = document.getElementById('txt-scroll');
+  if (!pagesEl || !scrollEl) return false;
+
+  const pageW = scrollEl.clientWidth;
+  const pageH = scrollEl.clientHeight;
+  pagesEl.style.height = pageH + 'px';
+  pagesEl.style.width = pageW + 'px';
+  renderTxtPages(pagesEl, pageW, pageH, null);
+
+  txtPageStep = pageW;
+  txtTotalPages = Math.max(1, pagesEl.querySelectorAll('.txt-page').length);
+  const naturalPage = findTxtPageByAnchor(anchor);
+  txtTemporaryAnchorActive = false;
+  goToTxtPage(naturalPage + pageDelta, false);
+  return true;
+}
+
 function goToTxtPage(pageNum, animated = true) {
   const scrollEl = document.getElementById('txt-scroll');
   if (!scrollEl) return;
@@ -859,10 +952,20 @@ function goToTxtPage(pageNum, animated = true) {
 }
 
 function txtPageNext() {
+  if (txtTemporaryAnchorActive) {
+    const anchor = getCurrentTxtPageAnchor();
+    if (repaginateTxtNaturallyAroundAnchor(anchor, 1)) return;
+  }
+
   if (txtPageNum < txtTotalPages - 1) goToTxtPage(txtPageNum + 1);
 }
 
 function txtPagePrev() {
+  if (txtTemporaryAnchorActive) {
+    const anchor = getCurrentTxtPageAnchor();
+    if (repaginateTxtNaturallyAroundAnchor(anchor, -1)) return;
+  }
+
   if (txtPageNum > 0) goToTxtPage(txtPageNum - 1);
 }
 
