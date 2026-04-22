@@ -21,6 +21,9 @@ let epubBook         = null;
 let epubChapterList  = [];        // { index, id, href, title }[]
 let epubCurrentIndex = 0;
 let epubDirection    = 'horizontal'; // 'horizontal' | 'vertical'
+let epubTocOpen      = false;
+let epubPageNum      = 0;            // 当前章节内页码（仅用于显示）
+let epubResizeTimer  = null;
 const chapterCache   = new Map();    // index → Chapter
 
 // PDF 专用
@@ -85,7 +88,13 @@ function cleanupCurrentReader() {
   if (epubBook) { try { epubBook.destroy(); } catch {} epubBook = null; }
   epubChapterList  = [];
   epubCurrentIndex = 0;
+  epubPageNum      = 0;
+  clearTimeout(epubResizeTimer);
   chapterCache.clear();
+  epubTocOpen = false;
+  document.getElementById('toc-panel').classList.add('hidden');
+  document.getElementById('toc-btn').hidden = true;
+  document.getElementById('toc-list').innerHTML = '';
 
   // PDF / TXT 清理
   if (pdfDoc) { pdfDoc.destroy(); pdfDoc = null; }
@@ -126,6 +135,7 @@ async function loadEpub(file) {
   document.getElementById('placeholder').classList.add('hidden');
 
   epubChapterList = await buildChapterList(epubBook);
+  populateToc();
 
   // 构建阅读器 DOM 结构
   const container = document.getElementById('reader');
@@ -149,16 +159,18 @@ async function loadEpub(file) {
   epubEl.appendChild(scrollEl);
   container.appendChild(epubEl);
 
-  // 主文档选区监听（内容在主文档，无需 iframe 注入）
+  // overflow:hidden 已禁止滚动条，无需拦截 wheel 事件
+
+  // 主文档选区监听
   document.addEventListener('mouseup', onMainDocMouseUp);
 
-  // 竖/横排切换按钮
-  const dirBtn = document.getElementById('direction-btn');
-  dirBtn.hidden = false;
-  dirBtn.textContent = epubDirection === 'horizontal' ? '竖排' : '横排';
-
-  document.getElementById('prev-btn').textContent = '← 上一章';
-  document.getElementById('next-btn').textContent = '下一章 →';
+  // 显示控制按钮
+  document.getElementById('toc-btn').hidden = false;
+  document.getElementById('direction-btn').hidden = false;
+  document.getElementById('direction-btn').textContent =
+    epubDirection === 'horizontal' ? '竖排' : '横排';
+  document.getElementById('prev-btn').textContent = '← 上一页';
+  document.getElementById('next-btn').textContent = '下一页 →';
   UI.showNavigation();
 
   await renderEpubChapter(0);
@@ -172,18 +184,16 @@ async function renderEpubChapter(index) {
   const contentEl = document.getElementById('epub-content');
   if (!contentEl) return;
 
+  // 渲染前隐藏，避免短暂闪现错误位置的内容
+  contentEl.style.cssText = 'opacity:0; font-size:' + currentFontSize + '%;';
   contentEl.innerHTML = '';
   Renderer.render(chapter, contentEl);
 
-  // 跳转到章节开头
-  const scrollEl = document.getElementById('epub-scroll');
-  if (scrollEl) {
-    scrollEl.scrollTop  = 0;
-    // 竖排：章节开头在右侧，滚到最右端
-    scrollEl.scrollLeft = epubDirection === 'vertical' ? scrollEl.scrollWidth : 0;
-  }
+  // 布局初始化（设置容器尺寸 + 定位到第一页）
+  initEpubLayout(true);
 
   updateEpubNav();
+  updateTocHighlight(index);
 
   // 后台预取下一章
   const next = index + 1;
@@ -202,16 +212,103 @@ async function getEpubChapter(index) {
   return chapter;
 }
 
-function updateEpubNav() {
-  const total = epubChapterList.length;
-  const cur   = epubCurrentIndex;
-  const info  = epubChapterList[cur];
+// ─── 布局初始化（字体变化 / 方向切换 / 窗口尺寸变化后调用）──────────────────────
+//
+// 两种模式均使用：column-width = cW（视口宽），高度 = cH（视口高）
+// 每页恰好一列，列向右延伸，translateX(-page * cW) 翻页。
+// 视口尺寸来自 epub-scroll（已 inset 内缩提供视觉页边距）。
+//
+// 用 getBoundingClientRect() + Math.floor() 取整像素，防止亚像素溢出。
 
-  const label = `${cur + 1} / ${total}` + (info?.title ? `  ${info.title}` : '');
-  document.getElementById('page-info').textContent = label;
-  document.getElementById('prev-btn').disabled = cur <= 0;
-  document.getElementById('next-btn').disabled = cur >= total - 1;
+function initEpubLayout(resetToStart = true) {
+  requestAnimationFrame(() => {
+    const scrollEl  = document.getElementById('epub-scroll');
+    const contentEl = document.getElementById('epub-content');
+    if (!scrollEl || !contentEl) return;
+
+    const rect = scrollEl.getBoundingClientRect();
+    const cH   = Math.floor(rect.height);
+    const cW   = Math.floor(rect.width);
+
+    contentEl.style.height      = cH + 'px';
+    contentEl.style.columnWidth = cW + 'px';
+    contentEl.style.columnGap   = '0px';
+    contentEl.style.columnFill  = 'auto';
+
+    // 等浏览器多列回流完成后，读取 scrollWidth 并定位
+    requestAnimationFrame(() => {
+      const el = document.getElementById('epub-content');
+      if (!el) return;
+
+      if (resetToStart) epubPageNum = 0;
+      el.style.transform = `translateX(${-epubPageNum * cW}px)`;
+      el.style.opacity   = '1';
+      updateEpubNav();
+    });
+  });
 }
+
+function updateEpubNav() {
+  const scrollEl  = document.getElementById('epub-scroll');
+  const contentEl = document.getElementById('epub-content');
+
+  let pageStr = '';
+  if (scrollEl && contentEl && contentEl.scrollWidth > 0) {
+    const cW    = Math.floor(scrollEl.getBoundingClientRect().width);
+    const total = Math.max(1, Math.ceil(contentEl.scrollWidth / cW));
+    pageStr = `  [${epubPageNum + 1} / ${total}]`;
+  }
+
+  const info  = epubChapterList[epubCurrentIndex];
+  const title = info?.title ? `  ${info.title}` : '';
+  document.getElementById('page-info').textContent =
+    `${epubCurrentIndex + 1} / ${epubChapterList.length}${title}${pageStr}`;
+  document.getElementById('prev-btn').disabled = false;
+  document.getElementById('next-btn').disabled = false;
+}
+
+// ─── 章节内翻页（transform 瞬切，无滚动动画）────────────────────────────────────
+//
+// 横排与竖排统一公式：translateX(-page * cW)
+// 竖排使用 writing-mode: vertical-lr，列向右溢出，公式与横排相同。
+
+function epubPageNext() {
+  const scrollEl  = document.getElementById('epub-scroll');
+  const contentEl = document.getElementById('epub-content');
+  if (!scrollEl || !contentEl) return;
+
+  const cW      = Math.floor(scrollEl.getBoundingClientRect().width);
+  const maxPage = Math.max(0, Math.ceil(contentEl.scrollWidth / cW) - 1);
+
+  if (epubPageNum >= maxPage) {
+    if (epubCurrentIndex < epubChapterList.length - 1)
+      renderEpubChapter(epubCurrentIndex + 1);
+    return;
+  }
+
+  epubPageNum++;
+  contentEl.style.transform = `translateX(${-epubPageNum * cW}px)`;
+  updateEpubNav();
+}
+
+function epubPagePrev() {
+  const scrollEl  = document.getElementById('epub-scroll');
+  const contentEl = document.getElementById('epub-content');
+  if (!scrollEl || !contentEl) return;
+
+  if (epubPageNum <= 0) {
+    if (epubCurrentIndex > 0)
+      renderEpubChapter(epubCurrentIndex - 1);
+    return;
+  }
+
+  const cW = Math.floor(scrollEl.getBoundingClientRect().width);
+  epubPageNum--;
+  contentEl.style.transform = `translateX(${-epubPageNum * cW}px)`;
+  updateEpubNav();
+}
+
+// ─── 竖/横排切换 ──────────────────────────────────────────────────────────────
 
 function toggleEpubDirection() {
   epubDirection = epubDirection === 'horizontal' ? 'vertical' : 'horizontal';
@@ -222,18 +319,92 @@ function toggleEpubDirection() {
   const dirBtn = document.getElementById('direction-btn');
   if (dirBtn) dirBtn.textContent = epubDirection === 'horizontal' ? '竖排' : '横排';
 
-  // 切换后滚动到章节开头
-  const scrollEl = document.getElementById('epub-scroll');
-  if (scrollEl) {
-    scrollEl.scrollTop  = 0;
-    scrollEl.scrollLeft = epubDirection === 'vertical' ? scrollEl.scrollWidth : 0;
-  }
+  initEpubLayout(true);
 }
-
-// ─── 竖/横排切换按钮 ──────────────────────────────────────────────────────────
 
 document.getElementById('direction-btn').addEventListener('click', () => {
   if (readerType === 'epub') toggleEpubDirection();
+});
+
+// ─── 目录（TOC）──────────────────────────────────────────────────────────────
+
+function toggleToc() {
+  epubTocOpen = !epubTocOpen;
+  document.getElementById('toc-panel').classList.toggle('hidden', !epubTocOpen);
+}
+
+function populateToc() {
+  const list = document.getElementById('toc-list');
+  list.innerHTML = '';
+
+  const toc = epubBook?.navigation?.toc || [];
+
+  if (toc.length) {
+    renderTocItems(toc, list, 0);
+  } else {
+    // 备用：用 spine 章节列表
+    epubChapterList.forEach((ch, i) => {
+      const li = document.createElement('li');
+      li.className = 'toc-item';
+      li.textContent = ch.title || `第 ${i + 1} 章`;
+      li.dataset.index = String(i);
+      li.addEventListener('click', () => renderEpubChapter(i));
+      list.appendChild(li);
+    });
+  }
+}
+
+function renderTocItems(items, container, depth) {
+  for (const item of items) {
+    const li = document.createElement('li');
+    li.className = 'toc-item';
+    li.style.paddingLeft = (16 + depth * 16) + 'px';
+    li.textContent = (item.label || '').trim() || '（无标题）';
+
+    const rawHref = (item.href || '').split('#')[0];
+    const idx = findSpineIndex(rawHref);
+    li.dataset.index = String(idx);
+
+    if (idx >= 0) {
+      li.addEventListener('click', () => renderEpubChapter(idx));
+    } else {
+      li.style.opacity = '0.5';
+      li.style.cursor  = 'default';
+    }
+
+    container.appendChild(li);
+    if (item.subitems?.length) renderTocItems(item.subitems, container, depth + 1);
+  }
+}
+
+function findSpineIndex(href) {
+  // 精确匹配
+  let idx = epubChapterList.findIndex(ch => ch.href === href);
+  if (idx >= 0) return idx;
+  // 文件名匹配（去路径前缀）
+  const name = href.split('/').pop();
+  if (!name) return -1;
+  idx = epubChapterList.findIndex(ch => ch.href.split('/').pop() === name);
+  return idx;
+}
+
+function updateTocHighlight(chapterIndex) {
+  document.querySelectorAll('#toc-list .toc-item').forEach(el => {
+    const idx = parseInt(el.dataset.index, 10);
+    const active = idx === chapterIndex;
+    el.classList.toggle('toc-item-active', active);
+    if (active) el.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+document.getElementById('toc-btn').addEventListener('click', toggleToc);
+
+// ─── 窗口大小变化（外接屏幕等）────────────────────────────────────────────────
+
+window.addEventListener('resize', () => {
+  if (readerType !== 'epub') return;
+  clearTimeout(epubResizeTimer);
+  epubResizeTimer = setTimeout(() => initEpubLayout(true), 300);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -399,11 +570,11 @@ document.getElementById('analyze-btn').addEventListener('click', async () => {
   }
 });
 
-// ── 翻页 / 章节导航 ───────────────────────────────────────────────────────────
+// ── 翻页导航（EPUB：页内翻页+换章；PDF：换页）────────────────────────────────
 
 document.getElementById('prev-btn').addEventListener('click', () => {
   if (readerType === 'epub') {
-    renderEpubChapter(epubCurrentIndex - 1);
+    epubPagePrev();
     selectedText = '';
     UI.setAnalyzeBtnEnabled(false);
   } else if (readerType === 'pdf') {
@@ -413,7 +584,7 @@ document.getElementById('prev-btn').addEventListener('click', () => {
 
 document.getElementById('next-btn').addEventListener('click', () => {
   if (readerType === 'epub') {
-    renderEpubChapter(epubCurrentIndex + 1);
+    epubPageNext();
     selectedText = '';
     UI.setAnalyzeBtnEnabled(false);
   } else if (readerType === 'pdf') {
@@ -427,7 +598,7 @@ document.addEventListener('keydown', (e) => {
   if (!next && !prev) return;
 
   if (readerType === 'epub') {
-    next ? renderEpubChapter(epubCurrentIndex + 1) : renderEpubChapter(epubCurrentIndex - 1);
+    next ? epubPageNext() : epubPagePrev();
   } else if (readerType === 'pdf') {
     next ? renderPdfPage(currentPdfPage + 1) : renderPdfPage(currentPdfPage - 1);
   }
@@ -446,6 +617,8 @@ function adjustSize(direction) {
     UI.updateFontSizeLabel(currentFontSize);
     const contentEl = document.getElementById('epub-content');
     if (contentEl) contentEl.style.fontSize = currentFontSize + '%';
+    // 字体变化后重新计算布局（尤其竖排需要更新列高）
+    initEpubLayout(true);
 
   } else if (readerType === 'pdf') {
     currentPdfScale = Math.min(4.0, Math.max(0.5, currentPdfScale + direction * 0.2));

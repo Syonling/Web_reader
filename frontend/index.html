@@ -28,6 +28,7 @@
       <label for="file-input" class="btn btn-primary">打开文件</label>
       <!-- 接受 epub / pdf；mobi/azw3 会显示提示 -->
       <input type="file" id="file-input" accept=".epub,.pdf,.txt,.mobi,.azw3,.azw,.kfx" hidden>
+      <button id="toc-btn" class="btn" hidden title="目录">目录</button>
       <span id="book-title">未打开文件</span>
     </div>
 
@@ -54,9 +55,18 @@
 
   <!-- ── 阅读区域 ────────────────────────────────────────────────────────── -->
   <main id="reader-container">
-    <div id="reader"></div>
-    <div id="placeholder">
-      <p>支持 EPUB、PDF 格式<br><span class="placeholder-sub">选中文字后点击「分析选中文字」</span></p>
+    <!-- 目录侧边栏（仅 EPUB 显示） -->
+    <nav id="toc-panel" class="hidden" aria-label="目录">
+      <div class="toc-header">目录</div>
+      <ul id="toc-list" class="toc-list"></ul>
+    </nav>
+
+    <!-- 阅读主区域 -->
+    <div id="reader-area">
+      <div id="reader"></div>
+      <div id="placeholder">
+        <p>支持 EPUB、PDF 格式<br><span class="placeholder-sub">选中文字后点击「分析选中文字」</span></p>
+      </div>
     </div>
   </main>
 

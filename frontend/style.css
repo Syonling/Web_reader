@@ -82,18 +82,72 @@ body {
 #reader-container {
   flex: 1 1 auto;
   overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  background: var(--color-bg);
+}
+
+/* 目录侧边栏 */
+#toc-panel {
+  flex: 0 0 220px;
+  width: 220px;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  z-index: 5;
+}
+
+.toc-header {
+  padding: 12px 16px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.toc-list {
+  list-style: none;
+  padding: 6px 0;
+}
+
+.toc-item {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background 0.1s;
+  word-break: break-all;
+}
+
+.toc-item:hover { background: #f0ede8; }
+
+.toc-item-active {
+  color: var(--color-primary);
+  font-weight: 500;
+  background: #e8f0fe;
+}
+
+/* 阅读区（不含目录栏） */
+#reader-area {
+  flex: 1 1 auto;
+  overflow: hidden;
   position: relative;
+  min-width: 0;
   background: var(--color-bg);
 }
 
 #reader {
   width: 100%;
   height: 100%;
-}
-
-/* epub.js 生成的 iframe */
-#reader iframe {
-  border: none;
+  overflow: hidden;   /* 阻止 epub-content transform 溢出到父容器外 */
+  position: relative;
 }
 
 #placeholder {
@@ -532,25 +586,18 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  position: relative;
   background: var(--color-bg);
 }
 
+/*
+ * 翻页视口：绝对定位内缩提供视觉页边距，overflow:hidden 裁切多余列内容。
+ * 视口尺寸 = epub-reader 减去四边留白，JS 以此计算 cW / cH。
+ */
 .epub-scroll {
-  width: 100%;
-  height: 100%;
-}
-
-/* 横排：上下滚动 */
-.layout-horizontal .epub-scroll {
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* 竖排：左右滚动；direction:rtl 让初始位置在右端（即章节开头） */
-.layout-vertical .epub-scroll {
-  overflow-x: auto;
-  overflow-y: hidden;
-  direction: rtl;
+  position: absolute;
+  inset: 32px 48px;
+  overflow: hidden;
 }
 
 /* ─── 正文内容区 ──────────────────────────────────────────────────────────── */
@@ -562,34 +609,37 @@ body {
   color: var(--color-text);
   cursor: text;
   user-select: text;
+  box-sizing: border-box;
+  /* height / column-width / transform 由 JS initEpubLayout() 精确控制 */
 }
 
+/* 横排：CSS 多列，列向右延伸，translateX(-N*cW) 翻页 */
 .layout-horizontal .reader-content {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 40px 60px;
   direction: ltr;
 }
 
+/*
+ * 竖排：使用 vertical-lr（从上到下，列从左到右）。
+ * 相比 vertical-rl，列溢出方向与横排一致（向右），translateX 公式相同。
+ * 单页只有一列时，与 vertical-rl 视觉效果完全相同。
+ */
 .layout-vertical .reader-content {
-  writing-mode: vertical-rl;
-  direction: ltr;         /* 内容区恢复 ltr，避免 rtl 容器反转文字 */
-  padding: 40px 20px;
-  min-height: 100%;
-  min-width: max-content; /* 让内容宽度撑开横向滚动 */
-  box-sizing: border-box;
+  writing-mode: vertical-lr;
+  direction: ltr;
 }
 
 /* ─── 段落 / 标题 ─────────────────────────────────────────────────────────── */
 .r-p {
   margin-bottom: 0.8em;
   text-indent: 1em;
+  break-inside: avoid;   /* 防止段落在列边界处被截断 */
 }
 
 .r-h {
   font-weight: bold;
   margin: 1em 0 0.5em;
   text-indent: 0;
+  break-after: avoid;    /* 防止标题与后续段落分隔到不同列 */
 }
 
 .r-h1 { font-size: 1.4em; }
@@ -600,6 +650,7 @@ body {
 /* ─── Ruby（假名注音）─────────────────────────────────────────────────────── */
 ruby {
   ruby-align: center;
+  line-height: 1.2;  /* 防止注音撑开行高导致溢出 */
 }
 
 rt {
