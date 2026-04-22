@@ -26,9 +26,21 @@ let epubTocOpen      = false;
 let epubPageNum      = 0;            // 当前章节内页码（0-based）
 let epubTotalPages   = 1;            // 当前章节总页数
 let epubPageStep     = 1;            // EPUB 每页水平推进距离（px）
-let epubVerticalScrollSign = -1;     // vertical-rl 下一页的 scrollLeft 方向
 let epubResizeTimer  = null;
+let epubPendingPageAnchor = null;     // 重排后恢复当前页开头的源码位置
+let epubPendingPageTarget = null;     // 'start' | 'end' | number
 const chapterCache   = new Map();    // index → Chapter
+
+// TXT 专用
+let txtRawText = '';
+let txtPageNum = 0;
+let txtTotalPages = 1;
+let txtPageStep = 1;
+let txtPendingPageAnchor = null;
+
+// 阅读设置
+let readerTheme = 'original';
+let pageTurnMode = 'slide';           // 'slide' | 'instant'
 
 // PDF 专用
 let pdfDoc          = null;
@@ -96,7 +108,8 @@ function cleanupCurrentReader() {
   epubPageNum      = 0;
   epubTotalPages   = 1;
   epubPageStep     = 1;
-  epubVerticalScrollSign = -1;
+  epubPendingPageAnchor = null;
+  epubPendingPageTarget = null;
   clearTimeout(epubResizeTimer);
   chapterCache.clear();
   epubTocOpen = false;
@@ -114,6 +127,11 @@ function cleanupCurrentReader() {
   currentFontSize = CONFIG.READER.FONT_SIZE_DEFAULT;
   currentPdfPage  = 1;
   currentPdfScale = 1.5;
+  txtRawText      = '';
+  txtPageNum      = 0;
+  txtTotalPages   = 1;
+  txtPageStep     = 1;
+  txtPendingPageAnchor = null;
 
   UI.updateFontSizeLabel(currentFontSize);
   UI.setAnalyzeBtnEnabled(false);
@@ -184,9 +202,10 @@ async function loadEpub(file) {
   await renderEpubChapter(0);
 }
 
-async function renderEpubChapter(index) {
+async function renderEpubChapter(index, pageTarget = 'start') {
   if (index < 0 || index >= epubChapterList.length) return;
   epubCurrentIndex = index;
+  epubPendingPageTarget = pageTarget;
 
   const chapter   = await getEpubChapter(index);
   epubCurrentChapter = chapter;
@@ -197,7 +216,7 @@ async function renderEpubChapter(index) {
   contentEl.style.cssText = 'opacity:0; font-size:' + currentFontSize + '%;';
   contentEl.innerHTML = '';
 
-  // 布局初始化（设置容器尺寸 + 定位到第一页）
+  // 布局初始化（设置容器尺寸 + 定位到目标页）
   initEpubLayout(true);
 
   updateEpubNav();
@@ -246,13 +265,11 @@ function initEpubLayout(resetToStart = true) {
       contentEl.style.columnFill  = '';
       renderEpubContentForLayout(contentEl, cW, cH);
     } else {
-      const pageGap = Math.min(48, Math.max(24, Math.round(cW * 0.035)));
-      const pageContentW = Math.max(160, cW - pageGap);
       contentEl.style.width       = cW + 'px';
       contentEl.style.minWidth    = '';
-      contentEl.style.columnWidth = pageContentW + 'px';
-      contentEl.style.columnGap   = pageGap + 'px';
-      contentEl.style.columnFill  = 'auto';
+      contentEl.style.columnWidth = '';
+      contentEl.style.columnGap   = '';
+      contentEl.style.columnFill  = '';
       renderEpubContentForLayout(contentEl, cW, cH);
     }
 
@@ -264,11 +281,16 @@ function initEpubLayout(resetToStart = true) {
       const se = document.getElementById('epub-scroll');
       if (!el || !se) return;
 
-      epubVerticalScrollSign = epubDirection === 'vertical' ? 1 : detectEpubVerticalScrollSign(se);
-      epubTotalPages = epubDirection === 'vertical'
-        ? Math.max(1, el.querySelectorAll('.epub-vpage').length)
-        : Math.max(1, Math.ceil(measureEpubSpread(el, se) / epubPageStep));
-      if (resetToStart) epubPageNum = 0;
+      epubTotalPages = Math.max(1, el.querySelectorAll('.epub-page').length);
+      if (epubPendingPageTarget != null) {
+        epubPageNum = resolveEpubPageTarget(epubPendingPageTarget);
+        epubPendingPageTarget = null;
+      } else if (epubPendingPageAnchor != null) {
+        epubPageNum = findEpubPageByAnchor(epubPendingPageAnchor);
+        epubPendingPageAnchor = null;
+      } else if (resetToStart) {
+        epubPageNum = 0;
+      }
       goToEpubPage(epubPageNum, false);
       el.style.opacity   = '1';
       updateEpubNav();
@@ -276,100 +298,125 @@ function initEpubLayout(resetToStart = true) {
   });
 }
 
+function resolveEpubPageTarget(target) {
+  if (target === 'end') return Math.max(epubTotalPages - 1, 0);
+  if (target === 'start') return 0;
+  if (typeof target === 'number') return Math.min(Math.max(target, 0), Math.max(epubTotalPages - 1, 0));
+  return 0;
+}
+
+function relayoutEpubKeepingPosition() {
+  epubPendingPageAnchor = getCurrentEpubPageAnchor();
+  initEpubLayout(false);
+}
+
+function getCurrentEpubPageAnchor() {
+  const page = document.querySelectorAll('#epub-content .epub-page')[epubPageNum];
+  if (!page) return 0;
+  return parseInt(page.dataset.startUnit || '0', 10);
+}
+
+function findEpubPageByAnchor(anchor) {
+  const pages = [...document.querySelectorAll('#epub-content .epub-page')];
+  if (!pages.length) return 0;
+
+  for (let i = 0; i < pages.length; i++) {
+    const start = parseInt(pages[i].dataset.startUnit || '0', 10);
+    const end = parseInt(pages[i].dataset.endUnit || String(start + 1), 10);
+    if (anchor >= start && anchor < end) return i;
+    if (anchor < start) return Math.max(0, i - 1);
+  }
+
+  return pages.length - 1;
+}
+
 function renderEpubContentForLayout(contentEl, pageW, pageH) {
   if (!epubCurrentChapter) return;
 
   contentEl.innerHTML = '';
   contentEl.classList.toggle('vertical-pages', epubDirection === 'vertical');
+  contentEl.classList.toggle('horizontal-pages', epubDirection === 'horizontal');
 
-  if (epubDirection === 'vertical') {
-    renderVerticalPages(epubCurrentChapter, contentEl, pageW, pageH);
-  } else {
-    Renderer.render(epubCurrentChapter, contentEl);
-  }
+  renderPaginatedEpubPages(epubCurrentChapter, contentEl, pageW, pageH, epubDirection);
 }
 
-function renderVerticalPages(chapter, container, pageW, pageH) {
+function renderPaginatedEpubPages(chapter, container, pageW, pageH, direction) {
   const pages = [];
-  let page = createVerticalPage(pageW, pageH);
+  let page = createEpubPage(pageW, pageH, direction);
   container.appendChild(page.el);
   pages.push(page);
 
+  let unitIndex = 0;
   for (const block of chapter.blocks) {
-    page = appendBlockToVerticalPages(block, container, pages, pageW, pageH);
+    const result = appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex);
+    page = result.page;
+    unitIndex = result.nextUnitIndex;
   }
 
   container.style.width = (pages.length * pageW) + 'px';
 }
 
-function createVerticalPage(pageW, pageH) {
+function createEpubPage(pageW, pageH, direction) {
   const el = document.createElement('section');
-  el.className = 'epub-vpage';
+  el.className = direction === 'vertical' ? 'epub-page epub-vpage' : 'epub-page epub-hpage';
   el.style.width = pageW + 'px';
   el.style.height = pageH + 'px';
 
   const body = document.createElement('div');
-  body.className = 'epub-vpage-body';
+  body.className = direction === 'vertical' ? 'epub-vpage-body' : 'epub-hpage-body';
   el.appendChild(body);
 
   return { el, body };
 }
 
-function appendBlockToVerticalPages(block, container, pages, pageW, pageH) {
-  let page = pages[pages.length - 1];
-  const el = Renderer._renderBlock(block);
-  if (!el) return page;
-
-  page.body.appendChild(el);
-  if (!verticalPageOverflows(page.body)) return page;
-
-  page.body.removeChild(el);
-  if (page.body.childNodes.length > 0) {
-    page = createVerticalPage(pageW, pageH);
-    container.appendChild(page.el);
-    pages.push(page);
-    page.body.appendChild(el);
-    if (!verticalPageOverflows(page.body)) return page;
-    page.body.removeChild(el);
-  }
-
-  return splitBlockIntoVerticalPages(block, container, pages, pageW, pageH);
+function markPageUnit(page, unitIndex) {
+  if (page.el.dataset.startUnit == null) page.el.dataset.startUnit = String(unitIndex);
+  page.el.dataset.endUnit = String(unitIndex + 1);
 }
 
-function splitBlockIntoVerticalPages(block, container, pages, pageW, pageH) {
+function appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex) {
+  let page = pages[pages.length - 1];
   if (!block.nodes?.length || block.type === 'break') {
-    const page = pages[pages.length - 1];
     const el = Renderer._renderBlock(block);
     if (el) page.body.appendChild(el);
-    return page;
+    markPageUnit(page, unitIndex);
+    return { page, nextUnitIndex: unitIndex + 1 };
   }
 
-  let page = pages[pages.length - 1];
   let blockEl = createEmptyBlockElement(block);
   page.body.appendChild(blockEl);
 
   for (const unit of flattenInlineUnits(block.nodes)) {
     const node = renderInlineUnit(unit);
     blockEl.appendChild(node);
+    markPageUnit(page, unitIndex);
 
-    if (!verticalPageOverflows(page.body)) continue;
-
-    blockEl.removeChild(node);
-
-    if (!blockEl.hasChildNodes()) {
-      blockEl.appendChild(node);
+    if (!epubPageOverflows(page.body, direction)) {
+      unitIndex++;
       continue;
     }
 
-    page = createVerticalPage(pageW, pageH);
+    blockEl.removeChild(node);
+    page.el.dataset.endUnit = String(unitIndex);
+
+    if (!blockEl.hasChildNodes()) {
+      blockEl.appendChild(node);
+      markPageUnit(page, unitIndex);
+      unitIndex++;
+      continue;
+    }
+
+    page = createEpubPage(pageW, pageH, direction);
     container.appendChild(page.el);
     pages.push(page);
     blockEl = createEmptyBlockElement(block);
     page.body.appendChild(blockEl);
     blockEl.appendChild(node);
+    markPageUnit(page, unitIndex);
+    unitIndex++;
   }
 
-  return page;
+  return { page, nextUnitIndex: unitIndex };
 }
 
 function createEmptyBlockElement(block) {
@@ -402,62 +449,14 @@ function renderInlineUnit(unit) {
   return Renderer._renderNode(unit) || document.createTextNode('');
 }
 
-function verticalPageOverflows(pageBody) {
-  return pageBody.scrollWidth > pageBody.clientWidth + 2;
-}
-
-function measureEpubSpread(contentEl, scrollEl) {
-  const spreadFromRects = (rects) => {
-    let minLeft = Infinity;
-    let maxRight = -Infinity;
-
-    for (const rect of rects) {
-      if (!rect.width && !rect.height) continue;
-      minLeft = Math.min(minLeft, rect.left);
-      maxRight = Math.max(maxRight, rect.right);
-    }
-
-    return Number.isFinite(minLeft) ? (maxRight - minLeft) : 0;
-  };
-
-  const range = document.createRange();
-  range.selectNodeContents(contentEl);
-  const textSpread = spreadFromRects(range.getClientRects());
-  range.detach();
-
-  const blockSpread = spreadFromRects(
-    [...contentEl.querySelectorAll('.r-p, .r-h, ruby, br')]
-      .flatMap(el => [...el.getClientRects()])
-  );
-
-  return Math.max(contentEl.scrollWidth, scrollEl.scrollWidth, textSpread, blockSpread);
-}
-
-function detectEpubVerticalScrollSign(scrollEl) {
-  if (epubDirection !== 'vertical') return 1;
-
-  scrollEl.scrollLeft = 0;
-  scrollEl.scrollLeft = -1;
-  if (scrollEl.scrollLeft < 0) {
-    scrollEl.scrollLeft = 0;
-    return -1;
-  }
-
-  scrollEl.scrollLeft = 1;
-  if (scrollEl.scrollLeft > 0) {
-    scrollEl.scrollLeft = 0;
-    return 1;
-  }
-
-  scrollEl.scrollLeft = 0;
-  return -1;
+function epubPageOverflows(pageBody, direction) {
+  return direction === 'vertical'
+    ? pageBody.scrollWidth > pageBody.clientWidth + 2
+    : pageBody.scrollHeight > pageBody.clientHeight + 2;
 }
 
 function getEpubScrollLeft(pageNum) {
-  // vertical-rl 的下一页在当前页左侧；现代浏览器用负 scrollLeft 表示向左翻。
-  return epubDirection === 'vertical'
-    ? epubVerticalScrollSign * pageNum * epubPageStep
-    : pageNum * epubPageStep;
+  return pageNum * epubPageStep;
 }
 
 function goToEpubPage(pageNum, animated = true) {
@@ -465,12 +464,13 @@ function goToEpubPage(pageNum, animated = true) {
   if (!scrollEl) return;
 
   epubPageNum = Math.min(Math.max(pageNum, 0), Math.max(epubTotalPages - 1, 0));
-  scrollEl.classList.toggle('page-turning', animated);
+  const smooth = animated && pageTurnMode === 'slide';
+  scrollEl.classList.toggle('page-turning', smooth);
 
   scrollEl.scrollTo({
     left: getEpubScrollLeft(epubPageNum),
     top: 0,
-    behavior: animated ? 'smooth' : 'auto',
+    behavior: smooth ? 'smooth' : 'auto',
   });
   updateEpubNav();
 }
@@ -489,7 +489,7 @@ function updateEpubNav() {
 function epubPageNext() {
   if (epubPageNum >= epubTotalPages - 1) {
     if (epubCurrentIndex < epubChapterList.length - 1)
-      renderEpubChapter(epubCurrentIndex + 1);
+      renderEpubChapter(epubCurrentIndex + 1, 'start');
     return;
   }
 
@@ -499,7 +499,7 @@ function epubPageNext() {
 function epubPagePrev() {
   if (epubPageNum <= 0) {
     if (epubCurrentIndex > 0)
-      renderEpubChapter(epubCurrentIndex - 1);
+      renderEpubChapter(epubCurrentIndex - 1, 'end');
     return;
   }
 
@@ -517,7 +517,7 @@ function toggleEpubDirection() {
   const dirBtn = document.getElementById('direction-btn');
   if (dirBtn) dirBtn.textContent = epubDirection === 'horizontal' ? '竖排' : '横排';
 
-  initEpubLayout(true);
+  relayoutEpubKeepingPosition();
 }
 
 document.getElementById('direction-btn').addEventListener('click', () => {
@@ -618,9 +618,12 @@ document.getElementById('toc-btn').addEventListener('click', toggleToc);
 // ─── 窗口大小变化（外接屏幕等）────────────────────────────────────────────────
 
 window.addEventListener('resize', () => {
-  if (readerType !== 'epub') return;
   clearTimeout(epubResizeTimer);
-  epubResizeTimer = setTimeout(() => initEpubLayout(true), 300);
+  if (readerType === 'epub') {
+    epubResizeTimer = setTimeout(relayoutEpubKeepingPosition, 300);
+  } else if (readerType === 'txt') {
+    epubResizeTimer = setTimeout(relayoutTxtKeepingPosition, 300);
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -703,20 +706,182 @@ async function loadTxt(file) {
   UI.setBookTitle(file.name);
   document.getElementById('placeholder').classList.add('hidden');
 
-  const text = await decodeTxtFile(file);
+  txtRawText = await decodeTxtFile(file);
 
   const container = document.getElementById('reader');
   container.innerHTML = '';
-  container.style.cssText = 'overflow:auto; padding:40px 60px; background:var(--color-bg);';
+  container.removeAttribute('style');
 
-  const textDiv = document.createElement('div');
-  textDiv.className = 'txt-content';
-  textDiv.textContent = text;
-  container.appendChild(textDiv);
+  const txtEl = document.createElement('div');
+  txtEl.id = 'txt-reader';
+  txtEl.className = 'txt-reader';
+
+  const scrollEl = document.createElement('div');
+  scrollEl.id = 'txt-scroll';
+  scrollEl.className = 'txt-scroll';
+
+  const pagesEl = document.createElement('div');
+  pagesEl.id = 'txt-pages';
+  pagesEl.className = 'txt-pages';
+  pagesEl.style.fontSize = currentFontSize + '%';
+
+  scrollEl.appendChild(pagesEl);
+  txtEl.appendChild(scrollEl);
+  container.appendChild(txtEl);
+
+  txtEl.addEventListener('click', onTxtReaderClick);
 
   document.addEventListener('mouseup', onMainDocMouseUp);
 
-  document.getElementById('navigation').hidden = true;
+  document.getElementById('prev-btn').textContent = '← 上一页';
+  document.getElementById('next-btn').textContent = '下一页 →';
+  UI.showNavigation();
+
+  initTxtLayout(true);
+}
+
+function initTxtLayout(resetToStart = true) {
+  requestAnimationFrame(() => {
+    const scrollEl = document.getElementById('txt-scroll');
+    const pagesEl = document.getElementById('txt-pages');
+    if (!scrollEl || !pagesEl) return;
+
+    const cH = scrollEl.clientHeight;
+    const cW = scrollEl.clientWidth;
+    scrollEl.classList.remove('page-turning');
+    scrollEl.scrollLeft = 0;
+    pagesEl.style.height = cH + 'px';
+    pagesEl.style.width = cW + 'px';
+    txtPageStep = cW;
+
+    renderTxtPages(pagesEl, cW, cH);
+
+    requestAnimationFrame(() => {
+      txtTotalPages = Math.max(1, pagesEl.querySelectorAll('.txt-page').length);
+      if (txtPendingPageAnchor != null) {
+        txtPageNum = findTxtPageByAnchor(txtPendingPageAnchor);
+        txtPendingPageAnchor = null;
+      } else if (resetToStart) {
+        txtPageNum = 0;
+      }
+      goToTxtPage(txtPageNum, false);
+    });
+  });
+}
+
+function renderTxtPages(container, pageW, pageH) {
+  container.innerHTML = '';
+  const pages = [];
+  let page = createTxtPage(pageW, pageH);
+  container.appendChild(page.el);
+  pages.push(page);
+
+  for (let i = 0; i < txtRawText.length; i++) {
+    const node = document.createTextNode(txtRawText[i]);
+    page.body.appendChild(node);
+    markTxtPageUnit(page, i);
+
+    if (page.body.scrollHeight <= page.body.clientHeight + 2) continue;
+
+    page.body.removeChild(node);
+    page.el.dataset.endUnit = String(i);
+
+    if (!page.body.hasChildNodes()) {
+      page.body.appendChild(node);
+      markTxtPageUnit(page, i);
+      continue;
+    }
+
+    page = createTxtPage(pageW, pageH);
+    container.appendChild(page.el);
+    pages.push(page);
+    page.body.appendChild(node);
+    markTxtPageUnit(page, i);
+  }
+
+  container.style.width = (pages.length * pageW) + 'px';
+}
+
+function createTxtPage(pageW, pageH) {
+  const el = document.createElement('section');
+  el.className = 'txt-page';
+  el.style.width = pageW + 'px';
+  el.style.height = pageH + 'px';
+
+  const body = document.createElement('div');
+  body.className = 'txt-page-body';
+  el.appendChild(body);
+  return { el, body };
+}
+
+function markTxtPageUnit(page, unitIndex) {
+  if (page.el.dataset.startUnit == null) page.el.dataset.startUnit = String(unitIndex);
+  page.el.dataset.endUnit = String(unitIndex + 1);
+}
+
+function getCurrentTxtPageAnchor() {
+  const page = document.querySelectorAll('#txt-pages .txt-page')[txtPageNum];
+  if (!page) return 0;
+  return parseInt(page.dataset.startUnit || '0', 10);
+}
+
+function findTxtPageByAnchor(anchor) {
+  const pages = [...document.querySelectorAll('#txt-pages .txt-page')];
+  if (!pages.length) return 0;
+
+  for (let i = 0; i < pages.length; i++) {
+    const start = parseInt(pages[i].dataset.startUnit || '0', 10);
+    const end = parseInt(pages[i].dataset.endUnit || String(start + 1), 10);
+    if (anchor >= start && anchor < end) return i;
+    if (anchor < start) return Math.max(0, i - 1);
+  }
+  return pages.length - 1;
+}
+
+function relayoutTxtKeepingPosition() {
+  txtPendingPageAnchor = getCurrentTxtPageAnchor();
+  initTxtLayout(false);
+}
+
+function goToTxtPage(pageNum, animated = true) {
+  const scrollEl = document.getElementById('txt-scroll');
+  if (!scrollEl) return;
+
+  txtPageNum = Math.min(Math.max(pageNum, 0), Math.max(txtTotalPages - 1, 0));
+  const smooth = animated && pageTurnMode === 'slide';
+  scrollEl.classList.toggle('page-turning', smooth);
+  scrollEl.scrollTo({
+    left: txtPageNum * txtPageStep,
+    top: 0,
+    behavior: smooth ? 'smooth' : 'auto',
+  });
+  updateTxtNav();
+}
+
+function txtPageNext() {
+  if (txtPageNum < txtTotalPages - 1) goToTxtPage(txtPageNum + 1);
+}
+
+function txtPagePrev() {
+  if (txtPageNum > 0) goToTxtPage(txtPageNum - 1);
+}
+
+function updateTxtNav() {
+  document.getElementById('page-info').textContent = `${txtPageNum + 1} / ${txtTotalPages}`;
+  document.getElementById('prev-btn').disabled = txtPageNum <= 0;
+  document.getElementById('next-btn').disabled = txtPageNum >= txtTotalPages - 1;
+}
+
+function onTxtReaderClick(e) {
+  if (readerType !== 'txt') return;
+
+  const selectionText = getCleanSelectionText(window.getSelection());
+  if (selectionText) return;
+
+  const rect = e.currentTarget.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  if (x <= rect.width * 0.28) txtPagePrev();
+  else if (x >= rect.width * 0.72) txtPageNext();
 }
 
 /**
@@ -795,6 +960,10 @@ document.getElementById('prev-btn').addEventListener('click', () => {
     UI.setAnalyzeBtnEnabled(false);
   } else if (readerType === 'pdf') {
     renderPdfPage(currentPdfPage - 1);
+  } else if (readerType === 'txt') {
+    txtPagePrev();
+    selectedText = '';
+    UI.setAnalyzeBtnEnabled(false);
   }
 });
 
@@ -805,6 +974,10 @@ document.getElementById('next-btn').addEventListener('click', () => {
     UI.setAnalyzeBtnEnabled(false);
   } else if (readerType === 'pdf') {
     renderPdfPage(currentPdfPage + 1);
+  } else if (readerType === 'txt') {
+    txtPageNext();
+    selectedText = '';
+    UI.setAnalyzeBtnEnabled(false);
   }
 });
 
@@ -819,6 +992,11 @@ document.addEventListener('keydown', (e) => {
     const prev = e.key === 'ArrowLeft'  || e.key === 'ArrowUp';
     if (!next && !prev) return;
     next ? renderPdfPage(currentPdfPage + 1) : renderPdfPage(currentPdfPage - 1);
+  } else if (readerType === 'txt') {
+    const next = e.key === 'ArrowRight' || e.key === 'ArrowDown';
+    const prev = e.key === 'ArrowLeft'  || e.key === 'ArrowUp';
+    if (!next && !prev) return;
+    next ? txtPageNext() : txtPagePrev();
   }
 });
 
@@ -835,8 +1013,8 @@ function adjustSize(direction) {
     UI.updateFontSizeLabel(currentFontSize);
     const contentEl = document.getElementById('epub-content');
     if (contentEl) contentEl.style.fontSize = currentFontSize + '%';
-    // 字体变化后重新计算布局（尤其竖排需要更新列高）
-    initEpubLayout(true);
+    // 字体变化后重新计算布局，同时保留当前章节内阅读位置
+    relayoutEpubKeepingPosition();
 
   } else if (readerType === 'pdf') {
     currentPdfScale = Math.min(4.0, Math.max(0.5, currentPdfScale + direction * 0.2));
@@ -847,10 +1025,32 @@ function adjustSize(direction) {
   } else if (readerType === 'txt') {
     currentFontSize = Math.min(max, Math.max(min, currentFontSize + direction * step));
     UI.updateFontSizeLabel(currentFontSize);
-    const el = document.querySelector('.txt-content');
+    const el = document.getElementById('txt-pages');
     if (el) el.style.fontSize = currentFontSize + '%';
+    relayoutTxtKeepingPosition();
   }
 }
+
+// ── 阅读设置：底色 / 翻页动画 ────────────────────────────────────────────────
+
+function applyReaderTheme(theme) {
+  readerTheme = theme;
+  document.body.classList.remove('theme-original', 'theme-sepia', 'theme-green');
+  document.body.classList.add(`theme-${theme}`);
+  document.querySelectorAll('.theme-dot').forEach(btn => {
+    btn.classList.toggle('theme-active', btn.dataset.theme === theme);
+  });
+}
+
+document.querySelectorAll('.theme-dot').forEach(btn => {
+  btn.addEventListener('click', () => applyReaderTheme(btn.dataset.theme));
+});
+
+document.getElementById('turn-mode-select').addEventListener('change', (e) => {
+  pageTurnMode = e.target.value === 'instant' ? 'instant' : 'slide';
+});
+
+applyReaderTheme(readerTheme);
 
 // ── 后端初始化 ─────────────────────────────────────────────────────────────────
 
