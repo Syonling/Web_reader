@@ -3,8 +3,10 @@
  * 部署时只需修改此文件中的 API_BASE_URL。
  */
 const CONFIG = {
-  // 后端地址：本地测试用 localhost，部署时改为服务器 URL
+  // AI 分析后端
   API_BASE_URL: 'http://localhost:5001',
+  // 书架/进度后端
+  LIBRARY_BASE_URL: 'http://localhost:5002',
 
   READER: {
     SPREAD: 'none',        // 'none' | 'auto' | 'always'
@@ -14,7 +16,7 @@ const CONFIG = {
 
 
     // 字体大小（%）
-    FONT_SIZE_DEFAULT: 100,
+    FONT_SIZE_DEFAULT: 130,
     FONT_SIZE_STEP: 10,
     FONT_SIZE_MIN: 60,
     FONT_SIZE_MAX: 200,

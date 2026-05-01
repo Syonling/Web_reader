@@ -60,11 +60,13 @@ async function loadChapter(epubBook, spineItem) {
 
 async function _fetchChapterDoc(epubBook, spineItem) {
   // 方案 A：epub.js Section.load() 标准 API
-  try {
-    await spineItem.load(epubBook.load.bind(epubBook));
-    if (spineItem.document) return spineItem.document;
-  } catch (e) {
-    console.warn('[epub-parser] Section.load() 失败，尝试备用方案:', e.message);
+  if (typeof spineItem?.load === 'function') {
+    try {
+      await spineItem.load(epubBook.load.bind(epubBook));
+      if (spineItem.document) return spineItem.document;
+    } catch (e) {
+      console.warn('[epub-parser] Section.load() 失败，尝试备用方案:', e.message);
+    }
   }
 
   // 方案 B：直接通过 book.load 加载原始 HTML

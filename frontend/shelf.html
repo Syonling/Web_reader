@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的书架</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="shelf.css">
+
+  <!-- epub.js（封面提取用） -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+
+  <!-- PDF.js（PDF 封面缩略图用） -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script>
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    }
+  </script>
+</head>
+<body class="shelf-body">
+
+  <header class="shelf-header">
+    <h1 class="shelf-title">我的书架</h1>
+    <div class="shelf-header-right">
+      <span id="library-status" class="library-status" title="书架后端状态"></span>
+    </div>
+  </header>
+
+  <main class="shelf-main">
+    <div id="shelf-grid" class="shelf-grid">
+      <!-- 书籍卡片由 JS 渲染 -->
+    </div>
+  </main>
+
+  <!-- 隐藏文件选择器 -->
+  <input type="file" id="file-input" accept=".epub,.pdf,.txt" hidden>
+
+  <!-- 删除确认弹窗 -->
+  <div id="delete-overlay" class="modal-overlay hidden">
+    <div class="modal" style="max-width:360px">
+      <div class="modal-header">
+        <h3 id="delete-modal-title">从书架移除</h3>
+        <button id="delete-cancel" class="btn-close" aria-label="取消">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="delete-modal-body" style="margin-bottom:20px;line-height:1.6"></p>
+        <div style="display:flex;gap:12px;justify-content:flex-end">
+          <button id="delete-cancel-btn" class="btn">取消</button>
+          <button id="delete-confirm-btn" class="btn" style="background:var(--color-danger);color:#fff;border-color:var(--color-danger)">移除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="db.js"></script>
+  <script src="library-api.js"></script>
+  <script src="shelf.js"></script>
+
+</body>
+</html>

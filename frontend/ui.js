@@ -87,8 +87,10 @@ const UI = {
 
   setStatus(online) {
     const dot = document.getElementById('status-dot');
+    const text = document.getElementById('status-text');
     dot.className = `status-dot ${online ? 'status-online' : 'status-offline'}`;
     dot.title = online ? '后端已连接' : '后端未连接';
+    if (text) text.textContent = online ? '后端已连接' : '后端未连接';
   },
 
   /** 更新工具栏的字体大小数字显示 */

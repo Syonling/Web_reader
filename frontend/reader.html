@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reader</title>
+  <link rel="stylesheet" href="style.css">
+
+  <!-- epub.js 依赖 -->
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
+
+  <!-- PDF.js -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script>
+    if (typeof pdfjsLib !== 'undefined') {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    }
+  </script>
+</head>
+<body>
+
+  <!-- ── 顶部工具栏 ──────────────────────────────────────────────────────── -->
+  <header id="toolbar">
+    <div class="toolbar-left">
+      <a href="shelf.html" class="btn btn-back" title="返回书架">← 书架</a>
+      <label for="file-input" class="btn btn-primary">打开文件</label>
+      <input type="file" id="file-input" accept=".epub,.pdf,.txt,.mobi,.azw3,.azw,.kfx" hidden>
+      <button id="toc-btn" class="btn" hidden title="目录">目录</button>
+      <span id="book-title">未打开文件</span>
+    </div>
+
+    <div class="toolbar-right">
+      <div class="font-size-control" title="调整字体/缩放大小">
+        <button id="font-decrease" class="btn btn-icon">A−</button>
+        <span id="font-size-label">100%</span>
+        <button id="font-increase" class="btn btn-icon">A+</button>
+      </div>
+
+      <div id="theme-control" class="theme-control" title="阅读底色">
+        <button class="theme-dot theme-original theme-active" data-theme="original" aria-label="原色"></button>
+        <button class="theme-dot theme-sepia" data-theme="sepia" aria-label="护眼米色"></button>
+        <button class="theme-dot theme-green" data-theme="green" aria-label="护眼淡绿色"></button>
+      </div>
+
+      <select id="turn-mode-select" title="翻页动画">
+        <option value="slide">滑动翻页</option>
+        <option value="instant">直接变字</option>
+      </select>
+
+      <button id="direction-btn" class="btn" hidden title="切换横排/竖排">竖排</button>
+
+      <button id="analyze-btn" class="btn btn-analyze" disabled title="先选中文字再点击">
+        分析选中文字
+      </button>
+
+      <button id="ai-settings-btn" class="btn" title="AI 设置">AI 设置</button>
+    </div>
+  </header>
+
+  <!-- ── 阅读区域 ────────────────────────────────────────────────────────── -->
+  <main id="reader-container">
+    <nav id="toc-panel" class="hidden" aria-label="目录">
+      <div class="toc-header">目录</div>
+      <ul id="toc-list" class="toc-list"></ul>
+    </nav>
+
+    <div id="reader-area">
+      <div id="ai-settings-panel" class="floating-panel hidden" aria-label="AI 设置">
+        <div class="floating-panel-header">AI 设置</div>
+        <div class="floating-panel-body">
+          <div class="ai-settings-row">
+            <label class="ai-settings-label" for="provider-select">模型</label>
+            <select id="provider-select" disabled title="选择 AI 模型">
+              <option value="">连接中...</option>
+            </select>
+          </div>
+
+          <div class="ai-settings-row">
+            <span class="ai-settings-label">后端状态</span>
+            <div class="ai-status-wrap">
+              <span id="status-dot" class="status-dot status-unknown" title="后端状态"></span>
+              <span id="status-text" class="status-text">连接中...</span>
+            </div>
+          </div>
+
+          <div class="ai-settings-row ai-settings-column">
+            <label class="ai-settings-label" for="api-key-input">API Key</label>
+            <div class="input-with-action">
+              <input id="api-key-input" class="text-input" type="password" placeholder="预留：未来可从前端输入">
+              <button id="api-key-visibility-btn" class="btn btn-inline" type="button" aria-pressed="false">显示</button>
+            </div>
+            <div id="api-key-provider-note" class="field-note">当前仅前端 UI 预留，按不同模型分别保存，暂未提交到后端。</div>
+          </div>
+
+          <div class="ai-settings-row ai-settings-actions">
+            <button id="api-key-save-btn" class="btn" type="button">保存占位参数</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="reader"></div>
+      <div id="placeholder">
+        <p>支持 EPUB、PDF、TXT 格式<br><span class="placeholder-sub">选中文字后点击「分析选中文字」</span></p>
+      </div>
+    </div>
+  </main>
+
+  <!-- ── 底部翻页导航 ────────────────────────────────────────────────────── -->
+  <nav id="navigation" hidden>
+    <button id="prev-btn" class="btn">←</button>
+    <span id="page-info"></span>
+    <button id="next-btn" class="btn">→</button>
+  </nav>
+
+  <!-- ── 分析结果弹窗 ────────────────────────────────────────────────────── -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h3 id="modal-title">分析结果</h3>
+        <button id="modal-close" class="btn-close" aria-label="关闭">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="db.js"></script>
+  <script src="library-api.js"></script>
+  <script src="api.js"></script>
+  <script src="ui.js"></script>
+  <script src="epub-parser.js"></script>
+  <script src="renderer.js"></script>
+  <script src="reader.js"></script>
+
+</body>
+</html>

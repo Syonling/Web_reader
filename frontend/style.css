@@ -159,6 +159,103 @@ body.theme-green {
   background: var(--color-bg);
 }
 
+.floating-panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 300px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-modal);
+  z-index: 20;
+  overflow: hidden;
+}
+
+.floating-panel-header {
+  padding: 12px 14px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.floating-panel-body {
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ai-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-settings-column {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.ai-settings-label {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.ai-settings-actions {
+  justify-content: flex-end;
+}
+
+.ai-status-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status-text {
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.text-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.input-with-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input-with-action .text-input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.btn-inline {
+  min-width: 56px;
+  padding: 8px 10px;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.field-note {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+
 #reader {
   width: 100%;
   height: 100%;
@@ -258,6 +355,11 @@ body.theme-green {
   color: var(--color-text);
   cursor: pointer;
   max-width: 180px;
+}
+
+#ai-settings-panel #provider-select {
+  width: 170px;
+  max-width: none;
 }
 
 #provider-select:disabled {
@@ -777,7 +879,7 @@ body.theme-green {
 .epub-hpage-body {
   width: 100%;
   height: 100%;
-  padding: 0 18px;
+  padding: 0 18px 28px;
   overflow: hidden;
   box-sizing: border-box;
 }
@@ -788,6 +890,10 @@ body.theme-green {
   text-indent: 1em;
   break-inside: avoid;
   -webkit-column-break-inside: avoid;  /* Safari 兼容 */
+}
+
+.r-p-cont {
+  text-indent: 0;
 }
 
 .r-h {
@@ -812,6 +918,9 @@ rt {
   font-size: 0.5em;
   ruby-position: over;    /* 横排在上方，vertical-rl 自动转为右侧 */
 }
+
+/* ─── 返回书架按钮 ────────────────────────────────────────────────────────── */
+a.btn-back { text-decoration: none; flex-shrink: 0; }
 
 /* ─── 工具类 ──────────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }

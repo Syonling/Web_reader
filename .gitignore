@@ -222,4 +222,6 @@ backend/
 .DS_Store
 **/.DS_Store
 
-
+library_backend/data
+library_backend/poetry.lock
+library_backend/pyproject.toml

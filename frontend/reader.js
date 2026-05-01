@@ -31,6 +31,8 @@ let epubPendingPageAnchor = null;     // 重排后恢复当前页开头的源码
 let epubPendingPageTarget = null;     // 'start' | 'end' | number
 let epubTemporaryAnchorActive = false; // 缩放/切换后临时固定当前页开头
 const chapterCache   = new Map();    // index → Chapter
+const epubLayoutCache = new Map();   // layoutKey -> { ranges }
+let epubProgressTimer = null;
 
 // TXT 专用
 let txtRawText = '';
@@ -48,12 +50,186 @@ let pdfDoc          = null;
 let currentPdfPage  = 1;
 let currentPdfScale = 1.5;
 
-// ─── ReaderProgress（存档接口，保留供后端书架/进度功能扩展）────────────────────
+// ─── 书架进度（当通过 reader.html?id= 从书架打开时启用）─────────────────────
+
+let currentBookId = null; // 由 URL ?id= 赋值
+let currentBookReaderSettings = null;
+let currentGlobalReaderSettings = null;
+let bookSettingsSaveTimer = null;
+let globalSettingsSaveTimer = null;
+let pendingBookAiProvider = null;
+let pendingLoadedBookSettings = null;
+let pendingLoadedGlobalSettings = null;
+let epubRelayoutCommitTimer = null;
+let txtRelayoutCommitTimer = null;
+let aiSettingsOpen = false;
+const API_KEY_PLACEHOLDER_STORAGE_KEY = 'reader_api_key_placeholders_by_provider';
 
 const ReaderProgress = {
-  save(bookId, index) { /* TODO: POST /api/progress */ },
-  load(bookId)        { return null; /* TODO: GET /api/progress/:id */ },
+  async save(chapterIndex = epubCurrentIndex, pageNum = epubPageNum) {
+    if (!currentBookId) return;
+    try {
+      await LibraryAPI.saveProgress(currentBookId, chapterIndex, pageNum);
+    } catch (err) {
+      if (err?.status !== 404) return;
+      const restored = await ensureCurrentBookRegistered();
+      if (!restored) return;
+      LibraryAPI.saveProgress(currentBookId, chapterIndex, pageNum).catch(() => {});
+    }
+  },
+  async load() {
+    if (!currentBookId) return null;
+    return LibraryAPI.getProgress(currentBookId).catch(() => null);
+  },
 };
+
+async function ensureCurrentBookRegistered() {
+  if (!currentBookId || typeof BookDB === 'undefined') return false;
+  const meta = await BookDB.getMeta(currentBookId).catch(() => null);
+  if (!meta) return false;
+  await LibraryAPI.addBook({
+    id: currentBookId,
+    title: meta.title,
+    fileName: meta.fileName,
+    fileSize: meta.fileSize,
+    format: meta.format,
+  }).catch(() => {});
+  return true;
+}
+
+function scheduleReaderProgressSave() {
+  if (!currentBookId || readerType !== 'epub') return;
+  clearTimeout(epubProgressTimer);
+  epubProgressTimer = setTimeout(() => {
+    ReaderProgress.save(epubCurrentIndex, epubPageNum);
+  }, 180);
+}
+
+function getCurrentBookReaderSettingsPayload() {
+  return {
+    direction: epubDirection,
+  };
+}
+
+function applyBookReaderSettings(settings) {
+  if (!settings) return;
+  currentBookReaderSettings = settings;
+  if (settings.direction === 'horizontal' || settings.direction === 'vertical') {
+    epubDirection = settings.direction;
+  }
+}
+
+function getCurrentGlobalReaderSettingsPayload() {
+  return {
+    font_size: currentFontSize,
+    theme: readerTheme,
+    turn_mode: pageTurnMode,
+    ai_provider: document.getElementById('provider-select')?.value || pendingBookAiProvider || '',
+  };
+}
+
+function applyGlobalReaderSettings(settings) {
+  if (!settings) return;
+  currentGlobalReaderSettings = settings;
+  if (typeof settings.font_size === 'number') {
+    currentFontSize = Math.min(CONFIG.READER.FONT_SIZE_MAX, Math.max(CONFIG.READER.FONT_SIZE_MIN, settings.font_size));
+  }
+  if (settings.theme === 'original' || settings.theme === 'sepia' || settings.theme === 'green') {
+    readerTheme = settings.theme;
+  }
+  if (settings.turn_mode === 'slide' || settings.turn_mode === 'instant') {
+    pageTurnMode = settings.turn_mode;
+  }
+  if (settings.ai_provider) {
+    pendingBookAiProvider = settings.ai_provider;
+  }
+  applyReaderTheme(readerTheme);
+  document.getElementById('turn-mode-select').value = pageTurnMode;
+  UI.updateFontSizeLabel(currentFontSize);
+}
+
+function scheduleBookReaderSettingsSave() {
+  if (!currentBookId) return;
+  clearTimeout(bookSettingsSaveTimer);
+  bookSettingsSaveTimer = setTimeout(async () => {
+    currentBookReaderSettings = {
+      ...(currentBookReaderSettings || {}),
+      ...getCurrentBookReaderSettingsPayload(),
+    };
+    await LibraryAPI.saveBookReaderSettings(currentBookId, currentBookReaderSettings).catch(() => {});
+  }, 180);
+}
+
+function toggleAiSettings(forceOpen = null) {
+  aiSettingsOpen = forceOpen == null ? !aiSettingsOpen : Boolean(forceOpen);
+  document.getElementById('ai-settings-panel').classList.toggle('hidden', !aiSettingsOpen);
+}
+
+function scheduleGlobalReaderSettingsSave() {
+  clearTimeout(globalSettingsSaveTimer);
+  globalSettingsSaveTimer = setTimeout(async () => {
+    currentGlobalReaderSettings = {
+      ...(currentGlobalReaderSettings || {}),
+      ...getCurrentGlobalReaderSettingsPayload(),
+    };
+    await LibraryAPI.saveGlobalReaderSettings(currentGlobalReaderSettings).catch(() => {});
+  }, 180);
+}
+
+async function applyPendingAiProviderIfNeeded(currentProvider = null) {
+  if (!pendingBookAiProvider) return;
+  if (pendingBookAiProvider === currentProvider) return;
+  try {
+    await API.switchProvider(pendingBookAiProvider);
+    const select = document.getElementById('provider-select');
+    if (select) select.value = pendingBookAiProvider;
+  } catch {}
+}
+
+function getApiKeyDraftMap() {
+  try {
+    const raw = window.localStorage.getItem(API_KEY_PLACEHOLDER_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveApiKeyDraftMap(map) {
+  try {
+    window.localStorage.setItem(API_KEY_PLACEHOLDER_STORAGE_KEY, JSON.stringify(map));
+  } catch {}
+}
+
+function setApiKeyVisibility(visible) {
+  const input = document.getElementById('api-key-input');
+  const btn = document.getElementById('api-key-visibility-btn');
+  if (!input || !btn) return;
+  input.type = visible ? 'text' : 'password';
+  btn.textContent = visible ? '隐藏' : '显示';
+  btn.setAttribute('aria-pressed', visible ? 'true' : 'false');
+}
+
+function updateApiKeyProviderNote(providerId = '') {
+  const note = document.getElementById('api-key-provider-note');
+  if (!note) return;
+  if (!providerId) {
+    note.textContent = '当前仅前端 UI 预留，按不同模型分别保存，暂未提交到后端。';
+    return;
+  }
+  note.textContent = `当前为 ${providerId} 单独保存本地占位 Key，输入框默认隐藏显示，暂未提交到后端。`;
+}
+
+function refreshApiKeyDraftForProvider(providerId = '') {
+  const input = document.getElementById('api-key-input');
+  if (!input) return;
+  const drafts = getApiKeyDraftMap();
+  input.value = providerId ? drafts[providerId] || '' : '';
+  setApiKeyVisibility(false);
+  updateApiKeyProviderNote(providerId);
+}
 
 // ─── 文件打开入口 ─────────────────────────────────────────────────────────────
 
@@ -67,6 +243,14 @@ document.getElementById('file-input').addEventListener('change', async (e) => {
 async function loadFile(file) {
   const ext = file.name.toLowerCase().split('.').pop();
   cleanupCurrentReader();
+  if (pendingLoadedGlobalSettings) {
+    applyGlobalReaderSettings(pendingLoadedGlobalSettings);
+    pendingLoadedGlobalSettings = null;
+  }
+  if (pendingLoadedBookSettings) {
+    applyBookReaderSettings(pendingLoadedBookSettings);
+    pendingLoadedBookSettings = null;
+  }
 
   if (ext === 'epub') {
     await loadEpub(file);
@@ -114,10 +298,12 @@ function cleanupCurrentReader() {
   epubTemporaryAnchorActive = false;
   clearTimeout(epubResizeTimer);
   chapterCache.clear();
+  epubLayoutCache.clear();
   epubTocOpen = false;
   document.getElementById('toc-panel').classList.add('hidden');
   document.getElementById('toc-btn').hidden = true;
   document.getElementById('toc-list').innerHTML = '';
+  toggleAiSettings(false);
 
   // PDF / TXT 清理
   if (pdfDoc) { pdfDoc.destroy(); pdfDoc = null; }
@@ -126,14 +312,22 @@ function cleanupCurrentReader() {
   // 公共重置
   readerType      = null;
   selectedText    = '';
-  currentFontSize = CONFIG.READER.FONT_SIZE_DEFAULT;
   currentPdfPage  = 1;
   currentPdfScale = 1.5;
   txtRawText      = '';
   txtPageNum      = 0;
   txtTotalPages   = 1;
   txtPageStep     = 1;
+  clearTimeout(epubProgressTimer);
+  clearTimeout(bookSettingsSaveTimer);
+  clearTimeout(globalSettingsSaveTimer);
+  clearTimeout(epubRelayoutCommitTimer);
+  clearTimeout(txtRelayoutCommitTimer);
+  currentBookReaderSettings = null;
+  epubDirection = 'horizontal';
 
+  applyReaderTheme(readerTheme);
+  document.getElementById('turn-mode-select').value = pageTurnMode;
   UI.updateFontSizeLabel(currentFontSize);
   UI.setAnalyzeBtnEnabled(false);
 
@@ -200,7 +394,17 @@ async function loadEpub(file) {
   document.getElementById('next-btn').textContent = '下一页 →';
   UI.showNavigation();
 
-  await renderEpubChapter(0);
+  let startChapter = 0;
+  let startPage = 'start';
+  if (currentBookId) {
+    const prog = await ReaderProgress.load();
+    if (prog?.chapter_index > 0) startChapter = prog.chapter_index;
+    if (typeof prog?.page_num === 'number' && prog.page_num > 0) startPage = prog.page_num;
+  }
+  epubEl.className = `epub-reader layout-${epubDirection}`;
+  const dirBtn = document.getElementById('direction-btn');
+  if (dirBtn) dirBtn.textContent = epubDirection === 'horizontal' ? '竖排' : '横排';
+  await renderEpubChapter(startChapter, startPage);
 }
 
 async function renderEpubChapter(index, pageTarget = 'start') {
@@ -230,7 +434,7 @@ async function renderEpubChapter(index, pageTarget = 'start') {
     getEpubChapter(next).catch(() => {});
   }
 
-  ReaderProgress.save(epubBook?.packaging?.metadata?.identifier, index);
+  scheduleReaderProgressSave();
 }
 
 async function getEpubChapter(index) {
@@ -314,6 +518,13 @@ function relayoutEpubKeepingPosition() {
   initEpubLayout(false);
 }
 
+function scheduleEpubRelayout() {
+  clearTimeout(epubRelayoutCommitTimer);
+  epubRelayoutCommitTimer = setTimeout(() => {
+    relayoutEpubKeepingPosition();
+  }, 140);
+}
+
 function repaginateEpubNaturallyAroundAnchor(anchor, pageDelta) {
   const contentEl = document.getElementById('epub-content');
   const scrollEl = document.getElementById('epub-scroll');
@@ -363,22 +574,6 @@ function renderEpubContentForLayout(contentEl, pageW, pageH, forcedPageStart = n
   renderPaginatedEpubPages(epubCurrentChapter, contentEl, pageW, pageH, epubDirection, forcedPageStart);
 }
 
-function renderPaginatedEpubPages(chapter, container, pageW, pageH, direction, forcedPageStart = null) {
-  const pages = [];
-  let page = createEpubPage(pageW, pageH, direction);
-  container.appendChild(page.el);
-  pages.push(page);
-
-  let unitIndex = 0;
-  for (const block of chapter.blocks) {
-    const result = appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex, forcedPageStart);
-    page = result.page;
-    unitIndex = result.nextUnitIndex;
-  }
-
-  container.style.width = (pages.length * pageW) + 'px';
-}
-
 function createEpubPage(pageW, pageH, direction) {
   const el = document.createElement('section');
   el.className = direction === 'vertical' ? 'epub-page epub-vpage' : 'epub-page epub-hpage';
@@ -392,120 +587,7 @@ function createEpubPage(pageW, pageH, direction) {
   return { el, body };
 }
 
-function markPageUnit(page, unitIndex) {
-  if (page.el.dataset.startUnit == null) page.el.dataset.startUnit = String(unitIndex);
-  page.el.dataset.endUnit = String(unitIndex + 1);
-}
-
-function markPageRange(page, startUnit, endUnit) {
-  if (page.el.dataset.startUnit == null) page.el.dataset.startUnit = String(startUnit);
-  page.el.dataset.endUnit = String(endUnit);
-}
-
-function appendBlockToEpubPages(block, container, pages, pageW, pageH, direction, unitIndex, forcedPageStart = null) {
-  let page = pages[pages.length - 1];
-  if (!block.nodes?.length || block.type === 'break') {
-    if (unitIndex === forcedPageStart && shouldForceEpubBreak(page.body, direction)) {
-      page = createEpubPage(pageW, pageH, direction);
-      container.appendChild(page.el);
-      pages.push(page);
-    }
-    const el = Renderer._renderBlock(block);
-    if (el) page.body.appendChild(el);
-    markPageUnit(page, unitIndex);
-    return { page, nextUnitIndex: unitIndex + 1 };
-  }
-
-  const units = flattenInlineUnits(block.nodes);
-  const blockStart = unitIndex;
-  const blockEnd = unitIndex + units.length;
-  const forcedInsideBlock = forcedPageStart != null &&
-    forcedPageStart > blockStart &&
-    forcedPageStart < blockEnd;
-
-  if (!forcedInsideBlock) {
-    if (unitIndex === forcedPageStart && shouldForceEpubBreak(page.body, direction)) {
-      page = createEpubPage(pageW, pageH, direction);
-      container.appendChild(page.el);
-      pages.push(page);
-    }
-
-    const wholeBlock = Renderer._renderBlock(block);
-    page.body.appendChild(wholeBlock);
-    markPageRange(page, blockStart, blockEnd);
-
-    if (!epubPageOverflows(page.body, direction)) {
-      return { page, nextUnitIndex: blockEnd };
-    }
-
-    page.body.removeChild(wholeBlock);
-    page.el.dataset.endUnit = String(blockStart);
-
-    if (page.body.childNodes.length > 0) {
-      page = createEpubPage(pageW, pageH, direction);
-      container.appendChild(page.el);
-      pages.push(page);
-      page.body.appendChild(wholeBlock);
-      markPageRange(page, blockStart, blockEnd);
-
-      if (!epubPageOverflows(page.body, direction)) {
-        return { page, nextUnitIndex: blockEnd };
-      }
-
-      page.body.removeChild(wholeBlock);
-      page.el.dataset.endUnit = String(blockStart);
-    }
-  }
-
-  let blockEl = null;
-
-  for (const unit of units) {
-    if (unitIndex === forcedPageStart && shouldForceEpubBreak(page.body, direction)) {
-      if (blockEl && !blockEl.hasChildNodes()) page.body.removeChild(blockEl);
-      page = createEpubPage(pageW, pageH, direction);
-      container.appendChild(page.el);
-      pages.push(page);
-      blockEl = null;
-    }
-
-    if (!blockEl) {
-      blockEl = createEmptyBlockElement(block);
-      page.body.appendChild(blockEl);
-    }
-
-    const node = renderInlineUnit(unit);
-    blockEl.appendChild(node);
-    markPageUnit(page, unitIndex);
-
-    if (!epubPageOverflows(page.body, direction)) {
-      unitIndex++;
-      continue;
-    }
-
-    blockEl.removeChild(node);
-    page.el.dataset.endUnit = String(unitIndex);
-
-    if (!blockEl.hasChildNodes()) {
-      blockEl.appendChild(node);
-      markPageUnit(page, unitIndex);
-      unitIndex++;
-      continue;
-    }
-
-    page = createEpubPage(pageW, pageH, direction);
-    container.appendChild(page.el);
-    pages.push(page);
-    blockEl = createEmptyBlockElement(block);
-    page.body.appendChild(blockEl);
-    blockEl.appendChild(node);
-    markPageUnit(page, unitIndex);
-    unitIndex++;
-  }
-
-  return { page, nextUnitIndex: unitIndex };
-}
-
-function createEmptyBlockElement(block) {
+function createEmptyBlockElement(block, isContinuation = false) {
   if (block.type === 'heading') {
     const level = Math.min(6, Math.max(1, block.level || 1));
     const el = document.createElement(`h${level}`);
@@ -514,7 +596,7 @@ function createEmptyBlockElement(block) {
   }
 
   const el = document.createElement('p');
-  el.className = 'r-p';
+  el.className = isContinuation ? 'r-p r-p-cont' : 'r-p';
   return el;
 }
 
@@ -535,22 +617,229 @@ function renderInlineUnit(unit) {
   return Renderer._renderNode(unit) || document.createTextNode('');
 }
 
+function renderPaginatedEpubPages(chapter, container, pageW, pageH, direction, forcedPageStart = null) {
+  const model = buildEpubPaginationModel(chapter);
+  const layoutKey = getEpubLayoutCacheKey(pageW, pageH, direction, forcedPageStart);
+  let ranges = forcedPageStart == null ? epubLayoutCache.get(layoutKey)?.ranges || null : null;
+
+  if (!ranges) {
+    const measure = createEpubPage(pageW, pageH, direction);
+    measure.el.style.position = 'absolute';
+    measure.el.style.visibility = 'hidden';
+    measure.el.style.pointerEvents = 'none';
+    measure.el.style.left = '-100000px';
+    measure.el.style.top = '0';
+    container.appendChild(measure.el);
+    ranges = computeEpubPageRanges(model, measure.body, direction, forcedPageStart);
+    measure.el.remove();
+    if (forcedPageStart == null) epubLayoutCache.set(layoutKey, { ranges });
+  }
+
+  const frag = document.createDocumentFragment();
+  if (!ranges.length) {
+    const emptyPage = createEpubPage(pageW, pageH, direction);
+    emptyPage.el.dataset.startUnit = '0';
+    emptyPage.el.dataset.endUnit = '0';
+    frag.appendChild(emptyPage.el);
+  } else {
+    for (const range of ranges) {
+      const page = createEpubPage(pageW, pageH, direction);
+      renderEpubRangeIntoPage(page.body, model, range.start, range.end);
+      page.el.dataset.startUnit = String(range.start);
+      page.el.dataset.endUnit = String(range.end);
+      frag.appendChild(page.el);
+    }
+  }
+
+  container.appendChild(frag);
+  container.style.width = (Math.max(ranges.length, 1) * pageW) + 'px';
+}
+
+function getEpubLayoutCacheKey(pageW, pageH, direction, forcedPageStart = null) {
+  return [
+    epubCurrentIndex,
+    direction,
+    currentFontSize,
+    pageW,
+    pageH,
+    forcedPageStart == null ? 'natural' : `anchor:${forcedPageStart}`,
+  ].join('|');
+}
+
+function buildEpubPaginationModel(chapter) {
+  const blocks = [];
+  const units = [];
+  let offset = 0;
+
+  for (const block of chapter.blocks) {
+    const blockUnits = block.type === 'break' || !block.nodes?.length
+      ? [{ type: '__break__' }]
+      : flattenInlineUnits(block.nodes);
+
+    const meta = {
+      block,
+      blockIndex: blocks.length,
+      start: offset,
+      end: offset + blockUnits.length,
+      units: blockUnits,
+    };
+    blocks.push(meta);
+
+    for (let localIndex = 0; localIndex < blockUnits.length; localIndex++) {
+      units.push({
+        unit: blockUnits[localIndex],
+        blockIndex: meta.blockIndex,
+        localIndex,
+      });
+    }
+
+    offset += blockUnits.length;
+  }
+
+  return { blocks, units, totalUnits: offset };
+}
+
+function computeEpubPageRanges(model, pageBody, direction, forcedPageStart = null) {
+  const ranges = [];
+  let start = 0;
+
+  while (start < model.totalUnits) {
+    let end = findMaxFittingRangeEnd(model, pageBody, start, direction);
+    if (end <= start) end = Math.min(start + 1, model.totalUnits);
+
+    if (forcedPageStart != null && start < forcedPageStart && end > forcedPageStart) {
+      end = forcedPageStart;
+    } else {
+      end = chooseNaturalPageBreak(model, start, end);
+    }
+
+    if (end <= start) end = Math.min(start + 1, model.totalUnits);
+    ranges.push({ start, end });
+    start = end;
+  }
+
+  return ranges;
+}
+
+function findMaxFittingRangeEnd(model, pageBody, start, direction) {
+  let low = start + 1;
+  let high = model.totalUnits;
+  let best = start;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    renderEpubRangeIntoPage(pageBody, model, start, mid);
+    if (!epubPageOverflows(pageBody, direction)) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return best;
+}
+
+function chooseNaturalPageBreak(model, start, maxEnd) {
+  if (maxEnd <= start + 1) return maxEnd;
+
+  let bestEnd = maxEnd;
+  let bestScore = scorePageBreak(model, start, maxEnd, maxEnd);
+  const floor = Math.max(start + 1, maxEnd - 120);
+
+  for (let end = maxEnd - 1; end >= floor; end--) {
+    const score = scorePageBreak(model, start, end, maxEnd);
+    if (score > bestScore) {
+      bestScore = score;
+      bestEnd = end;
+    }
+  }
+
+  return bestEnd;
+}
+
+function scorePageBreak(model, start, end, maxEnd) {
+  if (end <= start || end > model.totalUnits) return -Infinity;
+
+  const prev = model.units[end - 1] || null;
+  const next = model.units[end] || null;
+  if (!prev) return -Infinity;
+  if (isOpeningPunctuationUnit(prev.unit)) return -Infinity;
+  if (next && isTrailingPunctuationUnit(next.unit)) return -Infinity;
+
+  const distancePenalty = (maxEnd - end) * 3;
+  const blockMeta = model.blocks[prev.blockIndex];
+
+  if (prev.unit.type === '__break__') return 7000 - distancePenalty;
+  if (prev.localIndex === blockMeta.units.length - 1) return 6000 - distancePenalty;
+  if (isSentenceEndUnit(prev.unit)) return 5000 - distancePenalty;
+  if (isPauseUnit(prev.unit)) return 3500 - distancePenalty;
+  if (next && next.localIndex === 0) return 2500 - distancePenalty;
+  return -distancePenalty;
+}
+
+function renderEpubRangeIntoPage(pageBody, model, start, end) {
+  pageBody.innerHTML = '';
+  if (end <= start) return;
+
+  for (const meta of model.blocks) {
+    if (meta.end <= start) continue;
+    if (meta.start >= end) break;
+
+    const sliceStart = Math.max(start, meta.start) - meta.start;
+    const sliceEnd = Math.min(end, meta.end) - meta.start;
+    if (sliceEnd <= sliceStart) continue;
+
+    if (meta.block.type === 'break') {
+      const br = document.createElement('br');
+      pageBody.appendChild(br);
+      continue;
+    }
+
+    const el = createEmptyBlockElement(meta.block, sliceStart > 0);
+    for (let i = sliceStart; i < sliceEnd; i++) {
+      el.appendChild(renderInlineUnit(meta.units[i]));
+    }
+    if (el.hasChildNodes()) pageBody.appendChild(el);
+  }
+}
+
+function isOpeningPunctuationUnit(unit) {
+  return Boolean(
+    unit?.type === 'text' &&
+    unit.content &&
+    /^[「『（〈《【〔［｛“‘]$/.test(unit.content)
+  );
+}
+
+function isTrailingPunctuationUnit(unit) {
+  return Boolean(
+    unit?.type === 'text' &&
+    unit.content &&
+    /^[，。、．？！：；）」』】〕］｝〉》’”]$/.test(unit.content)
+  );
+}
+
+function isSentenceEndUnit(unit) {
+  return Boolean(
+    unit?.type === 'text' &&
+    unit.content &&
+    /^[。．？！?!）」』】〕］｝〉》’”]$/.test(unit.content)
+  );
+}
+
+function isPauseUnit(unit) {
+  return Boolean(
+    unit?.type === 'text' &&
+    unit.content &&
+    /^[，、；：]$/.test(unit.content)
+  );
+}
+
 function epubPageOverflows(pageBody, direction) {
   return direction === 'vertical'
-    ? pageBody.scrollWidth > pageBody.clientWidth + 2
+    ? pageBody.scrollWidth > pageBody.clientWidth + 4
     : pageBody.scrollHeight > pageBody.clientHeight + 2;
-}
-
-function getEpubPageFillRatio(pageBody, direction) {
-  const used = direction === 'vertical' ? pageBody.scrollWidth : pageBody.scrollHeight;
-  const available = direction === 'vertical' ? pageBody.clientWidth : pageBody.clientHeight;
-  if (available <= 0) return 1;
-  return Math.min(1, used / available);
-}
-
-function shouldForceEpubBreak(pageBody, direction) {
-  if (!pageBody.childNodes.length) return false;
-  return getEpubPageFillRatio(pageBody, direction) >= FORCED_BREAK_MIN_FILL;
 }
 
 function getEpubScrollLeft(pageNum) {
@@ -571,6 +860,7 @@ function goToEpubPage(pageNum, animated = true) {
     behavior: smooth ? 'smooth' : 'auto',
   });
   updateEpubNav();
+  scheduleReaderProgressSave();
 }
 
 function updateEpubNav() {
@@ -626,6 +916,7 @@ function toggleEpubDirection() {
   if (dirBtn) dirBtn.textContent = epubDirection === 'horizontal' ? '竖排' : '横排';
 
   relayoutEpubKeepingPosition();
+  scheduleBookReaderSettingsSave();
 }
 
 document.getElementById('direction-btn').addEventListener('click', () => {
@@ -654,6 +945,7 @@ function onEpubReaderClick(e) {
 
 function toggleToc() {
   epubTocOpen = !epubTocOpen;
+  if (epubTocOpen) toggleAiSettings(false);
   document.getElementById('toc-panel').classList.toggle('hidden', !epubTocOpen);
 }
 
@@ -722,15 +1014,28 @@ function updateTocHighlight(chapterIndex) {
 }
 
 document.getElementById('toc-btn').addEventListener('click', toggleToc);
+document.getElementById('ai-settings-btn').addEventListener('click', () => {
+  epubTocOpen = false;
+  document.getElementById('toc-panel').classList.add('hidden');
+  toggleAiSettings();
+});
+
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('ai-settings-panel');
+  const btn = document.getElementById('ai-settings-btn');
+  if (!panel || !btn || !aiSettingsOpen) return;
+  if (panel.contains(e.target) || btn.contains(e.target)) return;
+  toggleAiSettings(false);
+});
 
 // ─── 窗口大小变化（外接屏幕等）────────────────────────────────────────────────
 
 window.addEventListener('resize', () => {
   clearTimeout(epubResizeTimer);
   if (readerType === 'epub') {
-    epubResizeTimer = setTimeout(relayoutEpubKeepingPosition, 300);
+    epubResizeTimer = setTimeout(scheduleEpubRelayout, 220);
   } else if (readerType === 'txt') {
-    epubResizeTimer = setTimeout(relayoutTxtKeepingPosition, 300);
+    epubResizeTimer = setTimeout(scheduleTxtRelayout, 220);
   }
 });
 
@@ -963,6 +1268,13 @@ function relayoutTxtKeepingPosition() {
   });
 }
 
+function scheduleTxtRelayout() {
+  clearTimeout(txtRelayoutCommitTimer);
+  txtRelayoutCommitTimer = setTimeout(() => {
+    relayoutTxtKeepingPosition();
+  }, 140);
+}
+
 function goToTxtPage(pageNum, animated = true) {
   const scrollEl = document.getElementById('txt-scroll');
   const pagesEl = document.getElementById('txt-pages');
@@ -1131,7 +1443,8 @@ function adjustSize(direction) {
     const contentEl = document.getElementById('epub-content');
     if (contentEl) contentEl.style.fontSize = currentFontSize + '%';
     // 字体变化后重新计算布局，同时保留当前章节内阅读位置
-    relayoutEpubKeepingPosition();
+    scheduleEpubRelayout();
+    scheduleGlobalReaderSettingsSave();
 
   } else if (readerType === 'pdf') {
     currentPdfScale = Math.min(4.0, Math.max(0.5, currentPdfScale + direction * 0.2));
@@ -1144,7 +1457,8 @@ function adjustSize(direction) {
     UI.updateFontSizeLabel(currentFontSize);
     const el = document.getElementById('txt-pages');
     if (el) el.style.fontSize = currentFontSize + '%';
-    relayoutTxtKeepingPosition();
+    scheduleTxtRelayout();
+    scheduleGlobalReaderSettingsSave();
   }
 }
 
@@ -1160,11 +1474,15 @@ function applyReaderTheme(theme) {
 }
 
 document.querySelectorAll('.theme-dot').forEach(btn => {
-  btn.addEventListener('click', () => applyReaderTheme(btn.dataset.theme));
+  btn.addEventListener('click', () => {
+    applyReaderTheme(btn.dataset.theme);
+    scheduleGlobalReaderSettingsSave();
+  });
 });
 
 document.getElementById('turn-mode-select').addEventListener('change', (e) => {
   pageTurnMode = e.target.value === 'instant' ? 'instant' : 'slide';
+  scheduleGlobalReaderSettingsSave();
 });
 
 applyReaderTheme(readerTheme);
@@ -1175,23 +1493,80 @@ async function initBackend() {
   try {
     const data = await API.getProviders();
     UI.populateProviders(data.providers, data.current);
+    refreshApiKeyDraftForProvider(data.current || document.getElementById('provider-select')?.value || '');
+    await applyPendingAiProviderIfNeeded(data.current);
+    refreshApiKeyDraftForProvider(document.getElementById('provider-select')?.value || data.current || '');
     UI.setStatus(true);
   } catch {
     UI.setStatus(false);
     document.getElementById('provider-select').innerHTML =
       '<option value="">后端未连接</option>';
+    refreshApiKeyDraftForProvider('');
   }
 }
 
 document.getElementById('provider-select').addEventListener('change', async (e) => {
   const provider = e.target.value;
+  refreshApiKeyDraftForProvider(provider);
   if (!provider) return;
   try {
     await API.switchProvider(provider);
+    pendingBookAiProvider = provider;
+    scheduleGlobalReaderSettingsSave();
   } catch (err) {
     alert(`切换失败：${err.message}`);
     initBackend();
   }
 });
 
+document.getElementById('api-key-save-btn').addEventListener('click', () => {
+  const input = document.getElementById('api-key-input');
+  const provider = document.getElementById('provider-select')?.value || '';
+  if (!input || !provider) return;
+  const drafts = getApiKeyDraftMap();
+  drafts[provider] = input.value || '';
+  saveApiKeyDraftMap(drafts);
+});
+
+document.getElementById('api-key-visibility-btn').addEventListener('click', () => {
+  const input = document.getElementById('api-key-input');
+  if (!input) return;
+  setApiKeyVisibility(input.type === 'password');
+});
+
 initBackend();
+
+// ─── 书架入口：从 URL ?id= 自动加载书籍 ──────────────────────────────────────
+// 仅 reader.html 有 BookDB / LibraryAPI；index.html 直接打开文件时此段跳过。
+
+(async () => {
+  refreshApiKeyDraftForProvider(document.getElementById('provider-select')?.value || '');
+
+  if (typeof BookDB === 'undefined') return;
+  const globalSettings = await LibraryAPI.getGlobalReaderSettings().catch(() => null);
+  if (globalSettings) {
+    currentGlobalReaderSettings = globalSettings;
+    applyGlobalReaderSettings(globalSettings);
+    await applyPendingAiProviderIfNeeded(document.getElementById('provider-select')?.value || null);
+  }
+  const id = new URLSearchParams(window.location.search).get('id');
+  if (!id) return;
+
+  currentBookId = id;
+  const [meta, buffer] = await Promise.all([BookDB.getMeta(id), BookDB.getFile(id)]);
+  if (!meta || !buffer) {
+    document.getElementById('placeholder').innerHTML =
+      '<div class="unsupported-msg"><p class="unsupported-title">书籍数据丢失</p>' +
+      '<p class="unsupported-body">请返回书架重新添加该书籍。</p></div>';
+    document.getElementById('placeholder').classList.remove('hidden');
+    return;
+  }
+
+  const mimeMap = { epub: 'application/epub+zip', pdf: 'application/pdf', txt: 'text/plain' };
+  const mime = mimeMap[meta.format] || 'application/octet-stream';
+  const file = new File([buffer], meta.fileName, { type: mime });
+  pendingLoadedGlobalSettings = globalSettings;
+  pendingLoadedBookSettings = await LibraryAPI.getBookReaderSettings(id).catch(() => null);
+  await loadFile(file);
+  await applyPendingAiProviderIfNeeded(document.getElementById('provider-select')?.value || null);
+})()
